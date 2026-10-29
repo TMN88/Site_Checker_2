@@ -1,0 +1,39 @@
+#!/bin/sh
+# Run one fixed native command in a separate session; terminate its whole group.
+# setsid must be available. No shell command assembled from user input.
+limit=$1
+shift
+case "$limit" in ''|*[!0-9]*) exit 2 ;; esac
+command -v setsid >/dev/null 2>&1 || exit 127
+setsid "$@" &
+pid=$!
+cleanup() {
+    kill -TERM "-$pid" 2>/dev/null
+    sleep 1
+    kill -KILL "-$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+}
+trap 'cleanup; exit 124' INT TERM HUP
+(
+    sleeper=""
+    trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM INT HUP
+    sleep "$limit" &
+    sleeper=$!
+    wait "$sleeper"
+    sleeper=""
+    kill -TERM "-$pid" 2>/dev/null
+    sleep 1
+    kill -KILL "-$pid" 2>/dev/null
+) &
+timer=$!
+wait "$pid"
+rc=$?
+kill "$timer" 2>/dev/null
+wait "$timer" 2>/dev/null
+# Clean descendants even when a native CLI returns without waiting for them.
+kill -TERM "-$pid" 2>/dev/null
+if kill -0 "-$pid" 2>/dev/null; then
+    sleep 1
+    kill -KILL "-$pid" 2>/dev/null
+fi
+exit "$rc"

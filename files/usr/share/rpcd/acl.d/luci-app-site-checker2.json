@@ -1,0 +1,24 @@
+{
+  "luci-app-site-checker2": {
+    "description": "Site Checker 2.0: manual diagnostics and own configuration",
+    "read": {
+      "ubus": {
+        "site-checker2": [
+          "get_config",
+          "job"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "site-checker2": [
+          "save_config",
+          "start_sites",
+          "start_diagnostics",
+          "start_route",
+          "cancel"
+        ]
+      }
+    }
+  }
+}

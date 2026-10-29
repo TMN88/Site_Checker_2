@@ -1,0 +1,24 @@
+#!/bin/sh
+# rpcd handles LuCI sessions and enforces the ACL before dispatch.
+case "$1" in
+list)
+cat <<'JSON'
+{"get_config":{},"save_config":{"config":{}},"start_sites":{},"start_diagnostics":{},"start_route":{"target":"str"},"job":{"kind":"str"},"cancel":{"kind":"str"}}
+JSON
+;;
+call)
+    input=$(head -c 32769)
+    case "$2" in
+      get_config) /usr/libexec/site-checker2 get_config ;;
+      save_config) printf '%s' "$input" | jq '.config' | /usr/libexec/site-checker2 save_config ;;
+      start_sites) printf '{}' | /usr/libexec/site-checker2 start sites ;;
+      start_diagnostics) printf '{}' | /usr/libexec/site-checker2 start diagnostics ;;
+      start_route) printf '%s' "$input" | jq '{target}' | /usr/libexec/site-checker2 start route ;;
+      job|cancel)
+        kind=$(printf '%s' "$input" | jq -r '.kind // ""')
+        /usr/libexec/site-checker2 "$2" "$kind"
+        ;;
+      *) printf '{"ok":false,"error":"unknown_method"}\n' ;;
+    esac
+;;
+esac

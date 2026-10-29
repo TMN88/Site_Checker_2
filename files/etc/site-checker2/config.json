@@ -1,0 +1,87 @@
+{
+  "connect_timeout": 3,
+  "total_timeout": 5,
+  "parallel": 4,
+  "sites": [
+    {
+      "name": "YouTube",
+      "domain": "youtube.com",
+      "enabled": true
+    },
+    {
+      "name": "WhatsApp",
+      "domain": "whatsapp.com",
+      "enabled": true
+    },
+    {
+      "name": "Telegram",
+      "domain": "telegram.org",
+      "enabled": true
+    },
+    {
+      "name": "Instagram",
+      "domain": "instagram.com",
+      "enabled": true
+    },
+    {
+      "name": "TikTok",
+      "domain": "tiktok.com",
+      "enabled": true
+    },
+    {
+      "name": "Discord",
+      "domain": "discord.com",
+      "enabled": true
+    },
+    {
+      "name": "ChatGPT",
+      "domain": "chatgpt.com",
+      "enabled": true
+    },
+    {
+      "name": "Facebook",
+      "domain": "facebook.com",
+      "enabled": true
+    },
+    {
+      "name": "NTC",
+      "domain": "ntc.party",
+      "enabled": true
+    },
+    {
+      "name": "OpenWrt",
+      "domain": "openwrt.org",
+      "enabled": true
+    },
+    {
+      "name": "OpenWrt Downloads",
+      "domain": "downloads.openwrt.org",
+      "enabled": true
+    },
+    {
+      "name": "Google Play",
+      "domain": "play.google.com",
+      "enabled": true
+    },
+    {
+      "name": "GitHub Content",
+      "domain": "githubusercontent.com",
+      "enabled": true
+    },
+    {
+      "name": "RuTracker",
+      "domain": "rutracker.org",
+      "enabled": true
+    },
+    {
+      "name": "Госуслуги",
+      "domain": "gosuslugi.ru",
+      "enabled": true
+    },
+    {
+      "name": "ФНС",
+      "domain": "nalog.ru",
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,255 @@
+#!/bin/sh
+set -f
+umask 077
+ROOT=${SC2_ROOT:-}
+LIB="$ROOT/usr/share/site-checker2"
+SELF="$ROOT/usr/libexec/site-checker2"
+CONFIG="$ROOT/etc/site-checker2/config.json"
+STATE="$ROOT/tmp/site-checker2"
+PROBE="$ROOT/usr/libexec/site-checker2-probe"
+BOUND="$ROOT/usr/libexec/site-checker2-bounded"
+export LC_ALL=C
+error() { jq -cn --arg e "$1" '{ok:false,error:$e}'; }
+kind_ok() { case "$1" in sites|diagnostics|route) return 0 ;; *) return 1 ;; esac; }
+secure_state() {
+    [ ! -L "$STATE" ] || return 1
+    mkdir -p "$STATE" || return 1
+    chmod 700 "$STATE"
+}
+valid_config() {
+    jq -e -s 'length==1' "$1" >/dev/null 2>&1 && jq -e -f "$LIB/validate.jq" "$1" >/dev/null 2>&1
+}
+get_config() {
+    valid_config "$CONFIG" || { error config_invalid; return 1; }
+    jq '{ok:true,config:{connect_timeout,total_timeout,parallel,sites}}' "$CONFIG"
+}
+save_config() {
+    secure_state || { error state_error; return 1; }
+    input=$(mktemp "$STATE/save.XXXXXX") || return 1
+    head -c 32769 > "$input"
+    if [ "$(wc -c < "$input")" -gt 32768 ] || ! valid_config "$input"; then
+        rm -f "$input"; error invalid_config; return 1
+    fi
+    mkdir "$STATE/config.lock" 2>/dev/null || { rm -f "$input"; error busy; return 1; }
+    mkdir -p "$ROOT/etc/site-checker2"
+    # Projection discards fields that are not part of the configuration.
+    jq '{connect_timeout,total_timeout,parallel,sites:[.sites[]|{name,domain:(.domain|ascii_downcase),enabled}]}' "$input" > "$CONFIG.new" &&
+        mv "$CONFIG.new" "$CONFIG"
+    rc=$?
+    rm -f "$input"
+    rmdir "$STATE/config.lock"
+    [ "$rc" -eq 0 ] && get_config || { error save_failed; return 1; }
+}
+job() {
+    kind_ok "$1" || { error invalid_kind; return 1; }
+    dir="$STATE/$1"
+    if [ -f "$dir/result.json" ]; then cat "$dir/result.json"
+    elif [ -d "$dir/lock" ]; then
+        jq -cn --arg kind "$1" '{ok:true,state:"running",kind:$kind}'
+    else jq -cn '{ok:true,state:"idle"}'; fi
+}
+start() {
+    kind="$1"
+    kind_ok "$kind" || { error invalid_kind; return 1; }
+    secure_state || { error state_error; return 1; }
+    dir="$STATE/$kind"
+    [ ! -L "$dir" ] || { error state_error; return 1; }
+    mkdir -p "$dir"
+    mkdir "$dir/lock" 2>/dev/null || { error busy; return 1; }
+    rm -f "$dir/result.json"
+    head -c 4097 > "$dir/request.json"
+    if [ "$(wc -c < "$dir/request.json")" -gt 4096 ] || ! jq -e 'type=="object"' "$dir/request.json" >/dev/null 2>&1; then
+        rmdir "$dir/lock"; error invalid_request; return 1
+    fi
+    if ! valid_config "$CONFIG"; then rmdir "$dir/lock"; error config_invalid; return 1; fi
+    cp "$CONFIG" "$dir/config.json"
+    # Worker owns the lock until its cleanup trap runs.
+    sh "$SELF" worker "$kind" > "$dir/log" 2>&1 < /dev/null &
+    printf '%s\n' "$!" > "$dir/lock/pid" 2>/dev/null || true
+    jq -cn --arg kind "$kind" '{ok:true,state:"running",kind:$kind}'
+}
+cancel() {
+    kind_ok "$1" || { error invalid_kind; return 1; }
+    dir="$STATE/$1"
+    if [ -d "$dir/lock" ] && [ -s "$dir/lock/pid" ]; then
+        pid=$(cat "$dir/lock/pid")
+        case "$pid" in ''|*[!0-9]*) error invalid_pid; return 1 ;; esac
+        # A reused PID must never authorize killing an unrelated process.
+        if [ -r "/proc/$pid/cmdline" ] && tr '\000' ' ' < "/proc/$pid/cmdline" | grep -Fq "$SELF worker $1"; then
+            kill -TERM "$pid" 2>/dev/null
+            jq -cn '{ok:true,state:"cancelling"}'
+        elif ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$dir/lock/pid"
+            rmdir "$dir/lock" 2>/dev/null
+            jq -cn '{ok:false,state:"failed",error:"worker_lost"}' > "$dir/result.json"
+            cat "$dir/result.json"
+        else error cannot_verify_worker; return 1; fi
+    else job "$1"; fi
+}
+worker_cleanup() {
+    for child in $children; do kill -TERM "$child" 2>/dev/null; done
+    for child in $children; do wait "$child" 2>/dev/null; done
+    if [ ! -f "$dir/result.json" ]; then
+        jq -cn '{ok:false,state:"failed",error:"cancelled_or_failed"}' > "$dir/result.tmp"
+        mv "$dir/result.tmp" "$dir/result.json"
+    fi
+    rm -f "$dir/lock/pid"
+    rmdir "$dir/lock" 2>/dev/null
+}
+run_sites() {
+    parallel=$(jq -r .parallel "$dir/config.json")
+    connect=$(jq -r .connect_timeout "$dir/config.json")
+    total=$(jq -r .total_timeout "$dir/config.json")
+    jq -r '.sites | to_entries[] | select(.value.enabled) | [.key,.value.domain] | @tsv' "$dir/config.json" > "$dir/queue"
+    n=0
+    children=""
+    while read -r index domain; do
+        [ -n "$domain" ] || continue
+        url="https://$domain/"
+        [ "$domain" != githubusercontent.com ] || url="https://raw.githubusercontent.com/StressOzz/Zapret-Manager/refs/heads/main/Zapret-Manager.sh"
+        sh "$PROBE" "$url" "$connect" "$total" > "$dir/probe.$index" &
+        children="$children $!"
+        n=$((n+1))
+        if [ "$((n % parallel))" -eq 0 ]; then
+            for child in $children; do wait "$child"; done
+            children=""
+        fi
+    done < "$dir/queue"
+    for child in $children; do wait "$child"; done
+    children=""
+    # Keep result order stable even if requests complete in another order.
+    : > "$dir/rows"
+    while read -r index domain; do
+        [ -n "$domain" ] || continue
+        jq --argjson i "$index" --slurpfile cfg "$dir/config.json" '. + {name:$cfg[0].sites[$i].name,domain:$cfg[0].sites[$i].domain}' "$dir/probe.$index" >> "$dir/rows" || return 1
+    done < "$dir/queue"
+    jq -s '{ok:true,state:"done",results:.,source:"router_http",note:"HTTP не подтверждает все функции сайта или доступ клиента"}' "$dir/rows"
+}
+native() {
+    name=$1; shift
+    # All callers supply fixed commands; user-supplied shell fragments are forbidden.
+    sh "$BOUND" 20 "$@" > "$dir/$name.json" 2>/dev/null &
+    children="$children $!"
+    child=$!
+    wait "$child"
+    rc=$?
+    children=""
+    if [ "$rc" -ne 0 ] || [ "$(wc -c < "$dir/$name.json")" -gt 131072 ] || ! jq -e -s 'length==1 and (.[0]|type=="object")' "$dir/$name.json" >/dev/null 2>&1; then
+        printf '{}\n' > "$dir/$name.json"
+        printf '%s\n' "$name" >> "$dir/missing"
+    fi
+}
+detect() {
+    found=""
+    for app in podkop forkop; do
+        if [ -x "$ROOT/usr/bin/$app" ] || [ -f "$ROOT/etc/config/$app" ] || [ -f "$ROOT/usr/lib/opkg/info/$app.control" ]; then found="$found $app"
+        elif [ -z "$ROOT" ] && command -v apk >/dev/null 2>&1 && apk info -e "$app" >/dev/null 2>&1; then found="$found $app"; fi
+    done
+    if [ -x "$ROOT/usr/bin/netshift" ] || [ -f "$ROOT/etc/config/netshift" ]; then found="$found forkozz"; fi
+    set -- $found
+    [ "$#" -ne 0 ] || { error no_application; return 1; }
+    [ "$#" -eq 1 ] || { error multiple_applications; return 1; }
+    APP=$1
+    if [ "$APP" = forkozz ]; then
+        if [ -f "$ROOT/usr/lib/opkg/info/netshift.control" ] || [ -f "$ROOT/usr/lib/opkg/info/luci-app-netshift.control" ]; then error unsupported_netshift; return 1; fi
+        if [ -z "$ROOT" ] && command -v apk >/dev/null 2>&1 && { apk info -e netshift >/dev/null 2>&1 || apk info -e luci-app-netshift >/dev/null 2>&1; }; then error unsupported_netshift; return 1; fi
+    fi
+}
+run_diagnostics() {
+    detect || return 1
+    : > "$dir/missing"
+    printf '{}\n' > "$dir/panel.json"
+    printf '{}\n' > "$dir/servers.json"
+    case "$APP" in
+        podkop)
+            native system "$ROOT/usr/bin/podkop" get_system_info
+            native service "$ROOT/usr/bin/podkop" get_sing_box_status
+            native dns "$ROOT/usr/bin/podkop" check_dns_available
+            native fakeip "$ROOT/usr/bin/podkop" check_fakeip
+            ;;
+        forkop)
+            native system "$ROOT/usr/bin/forkop" get_system_info
+            native service "$ROOT/usr/bin/forkop" check_service
+            native dns "$ROOT/usr/bin/forkop" check_dns
+            native fakeip "$ROOT/usr/bin/forkop" check_traffic
+            native servers "$ROOT/usr/bin/forkop" check_servers
+            ;;
+        forkozz)
+            if [ ! -f "$ROOT/opt/zapret-manager-luci/netshift.uc" ]; then error unsupported_netshift; return 1; fi
+            native system "$ROOT/usr/bin/netshift" get_system_info
+            native service "$ROOT/usr/bin/netshift" get_sing_box_status
+            native dns "$ROOT/usr/bin/netshift" check_dns_available
+            native fakeip "$ROOT/usr/bin/netshift" check_fakeip
+            native panel ucode "$ROOT/opt/zapret-manager-luci/netshift.uc" diag
+            ;;
+    esac
+    case "$APP" in podkop) repo=itdoginfo/podkop ;; forkop) repo=ushan0v/forkop ;; forkozz) repo=yandexru45/netshift ;; esac
+    native latest curl -q --silent --fail --location --proto '=https' --proto-redir '=https' --noproxy '*' --connect-timeout 3 --max-time 5 "https://api.github.com/repos/$repo/releases/latest"
+    jq -n --arg app "$APP" --rawfile missing "$dir/missing" --slurpfile servers "$dir/servers.json" --slurpfile latest "$dir/latest.json" --slurpfile panel "$dir/panel.json" --slurpfile system "$dir/system.json" --slurpfile service "$dir/service.json" --slurpfile dns "$dir/dns.json" --slurpfile fakeip "$dir/fakeip.json" -f "$LIB/diagnostics.jq"
+}
+run_route() {
+    detect || return 1
+    if [ "$APP" != forkozz ] || [ ! -f "$ROOT/opt/zapret-manager-luci/netshift.uc" ]; then error route_unsupported; return 1; fi
+    target=$(jq -r '.target // ""' "$dir/request.json")
+    target=$(sh "$ROOT/usr/libexec/site-checker2-target" "$target") || { error invalid_target; return 1; }
+    native route_service "$ROOT/usr/bin/netshift" get_sing_box_status
+    jq -e '.running==true or .running==1' "$dir/route_service.json" >/dev/null || { error route_service_stopped; return 1; }
+    address=""
+    case "$target" in
+        *:*) address=$target ;;
+        *[!0-9.]*)
+            sh "$BOUND" 8 nslookup "$target" > "$dir/resolve.txt" 2>/dev/null &
+            children=$!
+            wait "$children"
+            children=""
+            address=$(awk '/^Name:/{seen=1;next} seen && /^Address/ {print $NF;exit}' "$dir/resolve.txt")
+            ;;
+        *) address=$target ;;
+    esac
+    captured=false
+    case "$address" in
+        198.18.*|198.19.*|2001:2::*|2001:2:0:*|fd00:ec3a:*) captured=true ;;
+        *:*) nft get element inet NetShiftTable netshift_subnets_v6 "{ $address }" >/dev/null 2>&1 && captured=true ;;
+        '') ;;
+        *) for setname in netshift_subnets netshift_discord_subnets; do
+            nft get element inet NetShiftTable "$setname" "{ $address }" >/dev/null 2>&1 && captured=true
+           done ;;
+    esac
+    native route ucode "$ROOT/opt/zapret-manager-luci/netshift.uc" route "$target" "$address" ""
+    [ ! -s "$dir/missing" ] || { error native_route_failed; return 1; }
+    jq -e '.error==null and (.action|type)=="string" and (.action|length)>0' "$dir/route.json" >/dev/null || { error native_route_failed; return 1; }
+    ipv6=false
+    case "$target" in *:*) ipv6=true ;; esac
+    case "$address" in *:*) ipv6=true ;; esac
+    jq --arg target "$target" --argjson captured "$captured" --argjson ipv6 "$ipv6" '
+      .action as $a |
+      {ok:true,state:"done",target:$target,confidence:"rules_only",capture_confirmed:$captured,
+       presumed_exit:(if $ipv6 then "unknown" elif $a=="connection" or $a=="outbound" then (if $captured then "vpn" else "unknown" end)
+         elif $a=="direct" or $a=="bypass" or $a=="fallback_direct" then "direct" elif $a=="block" then "blocked" else "unknown" end),
+       reason:(if $ipv6 then "Нативный анализатор не полностью учитывает IPv6 CIDR; направление не подтверждено"
+         elif $a=="source_required" then "Для этого правила нужен адрес клиентского устройства; направление не определено"
+         elif ($a=="connection" or $a=="outbound") and ($captured|not) then "Правило совпало, но перехват трафика не подтверждён"
+         else "Результат нативного анализа правил Forkozz" end),
+       matched_rule:(.rule // null),matched_section:(.section // null),outbound:(.outbound // null),action:$a,
+       note:"Предполагаемый маршрут по правилам; не доказательство прохождения пакета"}' "$dir/route.json"
+}
+case "$1" in
+    get_config) get_config ;;
+    save_config) save_config ;;
+    start) start "$2" ;;
+    job) job "$2" ;;
+    cancel) cancel "$2" ;;
+    worker)
+        kind_ok "$2" || exit 1
+        dir="$STATE/$2"
+        children=""
+        : > "$dir/missing"
+        trap 'worker_cleanup' EXIT
+        trap 'exit 1' INT TERM HUP
+        case "$2" in sites) run_sites ;; diagnostics) run_diagnostics ;; route) run_route ;; esac > "$dir/output"
+        if jq -e 'type=="object"' "$dir/output" >/dev/null 2>&1; then
+            jq '. + {state:"done"}' "$dir/output" > "$dir/result.tmp" && mv "$dir/result.tmp" "$dir/result.json"
+        fi
+        ;;
+    *) error unknown_method; exit 1 ;;
+esac

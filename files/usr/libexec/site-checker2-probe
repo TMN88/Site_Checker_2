@@ -1,0 +1,63 @@
+#!/bin/sh
+# Independently implemented HTTP probe following Zapret Manager _si_sites profile.
+# See docs/SOURCES.md. No upstream source is sourced or executed.
+LC_ALL=C
+export LC_ALL
+fail() { printf '{"status":"error","reason":"%s","http_code":0,"elapsed_ms":0,"curl_exit":null}\n' "$1"; exit 1; }
+[ "$#" -ge 1 ] && [ "$#" -le 3 ] || fail invalid_arguments
+url=$1
+case "$url" in *'
+'*) fail invalid_url ;; esac
+connect=${2:-3}
+total=${3:-5}
+case "$connect:$total" in *[!0-9:]*|:*|*:) fail invalid_timeout ;; esac
+[ "${#connect}" -le 2 ] && [ "${#total}" -le 2 ] || fail invalid_timeout
+[ "$connect" -ge 1 ] && [ "$connect" -le 30 ] && [ "$total" -ge "$connect" ] && [ "$total" -le 60 ] || fail invalid_timeout
+[ "${#url}" -le 1024 ] || fail invalid_url
+# Only ASCII HTTP(S) hosts and unambiguous paths; no credentials or shell syntax.
+printf '%s\n' "$url" | grep -Eq '^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(/[A-Za-z0-9._~/%-]*)?$' || fail invalid_url
+command -v curl >/dev/null 2>&1 || fail curl_missing
+tmp=$(mktemp "${TMPDIR:-/tmp}/site-checker2-probe.XXXXXX") || fail temp_error
+curl_pid=""
+cleanup() {
+    [ -z "$curl_pid" ] || { kill -TERM "$curl_pid" 2>/dev/null; wait "$curl_pid" 2>/dev/null; }
+    rm -f "$tmp"
+}
+trap 'cleanup; exit 143' INT TERM HUP
+trap 'cleanup' EXIT
+curl -q --silent --location --globoff --noproxy '*' \
+    --proto '=http,https' --proto-redir '=http,https' --max-redirs 5 \
+    --connect-timeout "$connect" --max-time "$total" \
+    --speed-time 3 --speed-limit 1 --range 0-65535 \
+    --user-agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) curl/8.0' \
+    --output /dev/null --write-out '%{http_code}|%{time_total}' -- "$url" > "$tmp" 2>/dev/null &
+curl_pid=$!
+wait "$curl_pid"
+rc=$?
+curl_pid=""
+result=$(cat "$tmp")
+code=${result%%|*}
+seconds=${result#*|}
+case "$code" in [0-9][0-9][0-9]) ;; *) code=000 ;; esac
+printf '%s\n' "$seconds" | grep -Eq '^[0-9]{1,4}([.][0-9]{1,9})?$' || seconds=0
+ms=$(awk -v s="$seconds" 'BEGIN {printf "%.0f", s * 1000}')
+status=error
+reason=network_error
+if [ "$rc" -eq 0 ]; then
+    case "$code" in
+        2??|3??) status=available; reason=none ;;
+        4??|5??) reason=http_error ;;
+        *) reason=invalid_response ;;
+    esac
+else
+    case "$rc" in
+        5|6) status=unavailable; reason=dns_error ;;
+        7) status=unavailable; reason=connect_error ;;
+        28) status=unavailable; reason=timeout ;;
+        35|51|58|60|77|83|90|91) reason=tls_error ;;
+        47) reason=redirect_limit ;;
+    esac
+fi
+# Do not reflect stderr, URLs, headers, or environment into diagnostic output.
+numeric_code=$(awk -v c="$code" 'BEGIN {printf "%d", c+0}')
+printf '{"status":"%s","reason":"%s","http_code":%s,"elapsed_ms":%s,"curl_exit":%s}\n' "$status" "$reason" "$numeric_code" "$ms" "$rc"
