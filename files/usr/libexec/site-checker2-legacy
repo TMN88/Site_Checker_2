@@ -1,0 +1,138 @@
+#!/bin/sh
+# Replace only the known TMN88/Site_Checker v1 layout.
+set -eu
+ACTION=$1
+BACKUP=$2
+ROOT=${3:-${SC2_ROOT:-}}
+PKG=luci-app-sitecheck
+paths() {
+cat <<'PATHS'
+usr/lib/lua/luci/controller/sitecheck.lua
+usr/lib/lua/luci/view/sitecheck/index.htm
+usr/libexec/sitecheck-check
+usr/libexec/sitecheck-check-zapret
+usr/libexec/sitecheck-system-sites
+usr/share/luci/menu.d/luci-app-site-checker.json
+etc/config/sitecheck
+PATHS
+}
+opkg_cmd() { if [ -n "$ROOT" ]; then opkg --offline-root "$ROOT" "$@"; else opkg "$@"; fi; }
+apk_cmd() { if [ -n "$ROOT" ]; then apk --root "$ROOT" "$@"; else apk "$@"; fi; }
+package_manager() {
+    if command -v apk >/dev/null 2>&1 && apk_cmd info -e "$PKG" >/dev/null 2>&1; then echo apk
+    elif command -v opkg >/dev/null 2>&1 && opkg_cmd status "$PKG" 2>/dev/null | grep -q '^Status:.* installed'; then echo opkg
+    else echo none; fi
+}
+check_package_files() {
+    case "$1" in
+        opkg) opkg_cmd files "$PKG" | awk '/^\// {print substr($0,2)}' > "$BACKUP/package-files" ;;
+        apk) apk_cmd info -L "$PKG" | awk 'NF && !/ contains:$/ {sub(/^\//,"");sub(/\/$/,"");print}' > "$BACKUP/package-files" ;;
+        *) return 0 ;;
+    esac
+    [ -s "$BACKUP/package-files" ] || { echo 'Не удалось проверить файлы пакета первой версии.' >&2; return 1; }
+    while IFS= read -r rel; do
+        if paths | grep -Fxq "$rel"; then continue; fi
+        case "$rel" in usr|usr/lib|usr/lib/lua|usr/lib/lua/luci|usr/lib/lua/luci/controller|usr/lib/lua/luci/view|usr/lib/lua/luci/view/sitecheck|usr/libexec|usr/share|usr/share/luci|usr/share/luci/menu.d|etc|etc/config) ;;
+            *) echo "Посторонний путь в пакете первой версии: $rel. Замена остановлена." >&2; return 1 ;;
+        esac
+    done < "$BACKUP/package-files"
+}
+snapshot() {
+    mkdir -p "$BACKUP/files"
+    : > "$BACKUP/manifest"
+    paths > "$BACKUP/allowlist"
+    while IFS= read -r rel; do
+        [ ! -L "$ROOT/$rel" ] || { echo "Ссылка вместо файла первой версии: $rel" >&2; return 1; }
+        if [ -e "$ROOT/$rel" ]; then
+            [ -f "$ROOT/$rel" ] || return 1
+            mkdir -p "$BACKUP/files/$(dirname "$rel")"
+            cp -p "$ROOT/$rel" "$BACKUP/files/$rel"
+            a=$(sha256sum "$ROOT/$rel"); b=$(sha256sum "$BACKUP/files/$rel")
+            [ "${a%% *}" = "${b%% *}" ] || return 1
+            printf '%s\n' "$rel" >> "$BACKUP/manifest"
+        fi
+    done < "$BACKUP/allowlist"
+    manager=$(package_manager)
+    printf '%s\n' "$manager" > "$BACKUP/manager"
+    check_package_files "$manager"
+    if [ "$manager" = opkg ]; then opkg_cmd status "$PKG" > "$BACKUP/package-status"; fi
+    if [ "$manager" = apk ]; then apk_cmd info -a "$PKG" > "$BACKUP/package-status"; fi
+    cp "$0" "$BACKUP/restore-helper.sh"
+    touch "$BACKUP/ready"
+}
+import_config() {
+    NEW=$4
+    VALIDATOR=$5
+    [ -f "$BACKUP/files/etc/config/sitecheck" ] || return 0
+    if ! command -v uci >/dev/null 2>&1; then echo 'UCI не найден: старые настройки сохранены только в резервной копии.'; return 0; fi
+    uci -q -c "$ROOT/etc/config" show sitecheck | sed -n "s/^sitecheck\.\([A-Za-z0-9_]*\)=site$/\1/p" > "$BACKUP/sections"
+    [ -s "$BACKUP/sections" ] || return 0
+    cp "$NEW" "$BACKUP/import.json"
+    while IFS= read -r sec; do
+        name=$(uci -q -c "$ROOT/etc/config" get "sitecheck.$sec.name" || true)
+        domain=$(uci -q -c "$ROOT/etc/config" get "sitecheck.$sec.domain" || true)
+        enabled=$(uci -q -c "$ROOT/etc/config" get "sitecheck.$sec.enabled" || true)
+        case "$domain" in https://*) domain=${domain#https://} ;; http://*) domain=${domain#http://} ;; esac
+        domain=${domain%%/*}
+        domain=${domain#www.}
+        domain=$(printf '%s' "$domain" | tr 'A-Z' 'a-z')
+        [ -n "$domain" ] || continue
+        [ -n "$name" ] || name=$domain
+        active=true; [ "$enabled" != 0 ] || active=false
+        jq --arg name "$name" --arg domain "$domain" --argjson enabled "$active" '
+          ([.sites|to_entries[]|select(.value.domain==$domain or .value.name==$name)|.key][0]) as $i |
+          if $i!=null then .sites[$i].enabled=$enabled
+          else .sites += [{name:$name,domain:$domain,enabled:$enabled}] end
+        ' "$BACKUP/import.json" > "$BACKUP/import.next"
+        mv "$BACKUP/import.next" "$BACKUP/import.json"
+    done < "$BACKUP/sections"
+    if jq -e -f "$VALIDATOR" "$BACKUP/import.json" >/dev/null 2>&1; then
+        cp "$BACKUP/import.json" "$NEW"
+        echo 'Перенесён доступный серверный выбор сайтов первой версии.'
+    else echo 'Старый список нестандартный: оставлены новые настройки; оригинал сохранён в резервной копии.'; fi
+}
+retire() {
+    [ -f "$BACKUP/ready" ] || return 1
+    while IFS= read -r rel; do
+        [ -f "$ROOT/$rel" ] && [ ! -L "$ROOT/$rel" ] || return 1
+        a=$(sha256sum "$ROOT/$rel"); b=$(sha256sum "$BACKUP/files/$rel")
+        [ "${a%% *}" = "${b%% *}" ] || { echo 'Первая версия изменилась во время установки. Повтори установку.' >&2; return 1; }
+    done < "$BACKUP/manifest"
+    manager=$(cat "$BACKUP/manager")
+    case "$manager" in
+        opkg)
+            opkg_cmd --noaction remove "$PKG" > "$BACKUP/package-plan" 2>&1 || { cat "$BACKUP/package-plan"; return 1; }
+            touch "$BACKUP/retiring"
+            opkg_cmd remove "$PKG" || return 1
+            ;;
+        apk)
+            apk_cmd --simulate --no-scripts --no-commit-hooks del "$PKG" > "$BACKUP/package-plan" 2>&1 || { cat "$BACKUP/package-plan"; return 1; }
+            awk '
+              /Purging/ {line=$0;sub(/^.*Purging[ \t]+/,"",line);sub(/[ \t].*$/,"",line);if(line!="luci-app-sitecheck")exit 1;seen=1}
+              /Installing|Upgrading|Downgrading|Reinstalling/ {exit 1}
+              END {if(!seen)exit 1}
+            ' "$BACKUP/package-plan" || { echo 'План apk затрагивает дополнительные пакеты или не распознан. Первая версия не удалена.' >&2; return 1; }
+            touch "$BACKUP/retiring"
+            apk_cmd --no-scripts --no-commit-hooks del "$PKG" || return 1
+            ;;
+    esac
+    touch "$BACKUP/retiring"
+    while IFS= read -r rel; do
+        paths | grep -Fxq "$rel" || return 1
+        rm -f "$ROOT/$rel"
+        [ ! -e "$ROOT/$rel" ] || return 1
+    done < "$BACKUP/manifest"
+    if [ -s "$BACKUP/manifest" ] || [ "$manager" != none ]; then
+        echo "Первая версия Site Checker заменена. Резервная копия: $BACKUP"
+    else echo 'Первая версия не обнаружена.'; fi
+}
+restore() {
+    [ -f "$BACKUP/manifest" ] || return 0
+    while IFS= read -r rel; do
+        paths | grep -Fxq "$rel" || return 1
+        mkdir -p "$ROOT/$(dirname "$rel")"
+        cp -p "$BACKUP/files/$rel" "$ROOT/$rel"
+    done < "$BACKUP/manifest"
+    [ ! -f "$BACKUP/package-status" ] || echo 'Файлы первой версии восстановлены. При сбое пакетного удаления проверь статус luci-app-sitecheck.' >&2
+}
+case "$ACTION" in snapshot) snapshot ;; import) import_config "$@" ;; retire) retire ;; restore) restore ;; *) exit 2 ;; esac

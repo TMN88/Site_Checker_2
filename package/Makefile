@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-site-checker2
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=0.local1
+PKG_RELEASE:=0.local2
 PKG_LICENSE:=MIT
 PKGARCH:=all
 

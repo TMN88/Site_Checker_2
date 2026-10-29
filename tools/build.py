@@ -2,6 +2,7 @@
 from pathlib import Path
 import tarfile, io, gzip, base64, hashlib, zipfile
 root = Path(__file__).resolve().parents[1]
+version = (root / 'files/usr/share/site-checker2/VERSION').read_text().strip()
 files = sorted(p for p in (root / 'files').rglob('*') if p.is_file() and 'etc/config/' not in p.as_posix())
 manifest = '\n'.join(p.relative_to(root / 'files').as_posix() for p in files) + '\n'
 raw = io.BytesIO()
@@ -23,10 +24,10 @@ script = script.replace('@PAYLOAD_SHA@', sha)
 script += '\n'.join(base64.b64encode(payload).decode()[i:i+76] for i in range(0, len(base64.b64encode(payload)), 76)) + '\n'
 (root / 'install.sh').write_text(script, encoding='utf-8', newline='\n')
 out = root / 'outputs'; out.mkdir(exist_ok=True)
-(out / 'site-checker2-2.0.0-local.1.sh').write_text(script, encoding='utf-8', newline='\n')
+(out / f'site-checker2-{version}.sh').write_text(script, encoding='utf-8', newline='\n')
 digest = hashlib.sha256(script.encode()).hexdigest()
-(out / 'site-checker2-2.0.0-local.1.sh.sha256').write_text(digest + '  site-checker2-2.0.0-local.1.sh\n')
-with zipfile.ZipFile(out / 'Site_Checker_2_local.1.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+(out / f'site-checker2-{version}.sh.sha256').write_text(digest + f'  site-checker2-{version}.sh\n')
+with zipfile.ZipFile(out / f'Site_Checker_2_{version}.zip', 'w', zipfile.ZIP_DEFLATED) as z:
     for p in sorted(root.rglob('*')):
         rel = p.relative_to(root)
         if p.is_file() and not any(x in ('work', '.git', 'outputs', 'node_modules') for x in rel.parts):

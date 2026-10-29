@@ -24,7 +24,8 @@ with tarfile.open(fileobj=io.BytesIO(gzip.decompress(payload)), mode='r:') as tf
             assert b'\r\n' not in source.read_bytes(), name
             if '/libexec/' in name: assert info.mode == 0o755, name
     assert 'etc/config/site_checker2' not in manifest
-out = root / 'outputs/site-checker2-2.0.0-local.1.sh'
+version = (root / 'files/usr/share/site-checker2/VERSION').read_text().strip()
+out = root / f'outputs/site-checker2-{version}.sh'
 assert out.read_bytes() == script
 assert hashlib.sha256(script).hexdigest() in out.with_suffix('.sh.sha256').read_text()
 assert b'@PAYLOAD_SHA@' not in header
