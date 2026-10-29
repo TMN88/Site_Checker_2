@@ -70,11 +70,22 @@ while IFS= read -r rel; do
         cp -p "/$rel" "$backup/files/$rel"
         printf '%s\n' "$rel" >> "$backup/previous"
     else printf '%s\n' "$rel" >> "$backup/created"; fi
-    mkdir -p "/$(dirname "$rel")"
+    case "$rel" in
+        etc/site-checker2/config.json) mkdir -p "/$(dirname "$rel")" ;;
+        *) (umask 022; mkdir -p "/$(dirname "$rel")") ;;
+    esac
     cp "$stage/files/$rel" "/$rel"
+    case "$rel" in
+        etc/site-checker2/config.json) chmod 600 "/$rel" ;;
+        usr/libexec/*) chmod 755 "/$rel" ;;
+        *) chmod 644 "/$rel" ;;
+    esac
     expected=$(sha256sum "$stage/files/$rel"); actual=$(sha256sum "/$rel")
     [ "${expected%% *}" = "${actual%% *}" ] || { echo "Не прошла проверка файла $rel" >&2; exit 1; }
 done < "$stage/manifest"
+# Repair app directories left at 0700 by versions local.1/local.2.
+# Never change permissions recursively or expose /etc/site-checker2.
+chmod 755 /www/luci-static/resources/view/site-checker2 /usr/share/site-checker2
 chmod 755 /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-legacy /usr/libexec/site-checker2-uninstall /usr/libexec/rpcd/site-checker2
 if [ "$new_config" -eq 1 ]; then
     sh "$legacy" import "$backup/legacy-v1" "" /etc/site-checker2/config.json "$stage/files/usr/share/site-checker2/validate.jq"

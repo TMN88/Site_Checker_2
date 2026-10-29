@@ -1,6 +1,6 @@
 # Site Checker 2.0
 
-Тестовая сборка **2.0.0-local.2**. Репозиторий: https://github.com/TMN88/Site_Checker_2. Полное ТЗ: [docs/Site_Checker_2_TZ.md](docs/Site_Checker_2_TZ.md).
+Тестовая сборка **2.0.0-local.3**. Репозиторий: https://github.com/TMN88/Site_Checker_2. Полное ТЗ: [docs/Site_Checker_2_TZ.md](docs/Site_Checker_2_TZ.md).
 
 Теперь установщик **заменяет первую версию**, если она найдена: сохраняет резервную копию в /root, проверяет установку второй версии и затем убирает старые компоненты. Подробности: [Замена версии 1](docs/REPLACING-V1.md).
 
@@ -21,9 +21,9 @@
 
 ## Готовые файлы
 
-- outputs/site-checker2-2.0.0-local.2.sh — установочный файл со встроенными компонентами.
-- outputs/site-checker2-2.0.0-local.2.sh.sha256 — SHA-256.
-- outputs/Site_Checker_2_2.0.0-local.2.zip — исходный проект.
+- outputs/site-checker2-2.0.0-local.3.sh — установочный файл со встроенными компонентами.
+- outputs/site-checker2-2.0.0-local.3.sh.sha256 — SHA-256.
+- outputs/Site_Checker_2_2.0.0-local.3.zip — исходный проект.
 - outputs/ui-desktop-dark.png и ui-mobile-light.png — проверенный вид интерфейса с явно обозначенными тестовыми ответами.
 
 Для установки на тестовый роутер:
@@ -41,6 +41,19 @@ sh /usr/libexec/site-checker2-uninstall --yes
 ~~~
 
 Собственная конфигурация сохраняется в /etc/site-checker2/config.json. Настройки сетевых приложений не удаляются.
+
+## Исправление HTTP 403 в local.1/local.2
+
+Из-за umask 077 прежний установщик мог создать каталог интерфейса с правами 700, а файлы — с правами 600. Веб-серверу недоступен JavaScript страницы. В local.3 выставляются 755 для каталога интерфейса и 644 для публичных файлов, в том числе при обновлении. Настройки остаются 600 в каталоге 700, резервные копии также не открываются.
+
+Обновись прежней командой wget выше. Для немедленного исправления уже установленного интерфейса можно выполнить только:
+
+~~~sh
+chmod 755 /www/luci-static/resources/view/site-checker2
+chmod 644 /www/luci-static/resources/view/site-checker2/overview.js /www/luci-static/resources/view/site-checker2/style.css
+~~~
+
+Затем обнови страницу LuCI без кеша. Рекурсивно менять права всего /www или /etc не нужно.
 
 ## Диагностика и ограничения
 

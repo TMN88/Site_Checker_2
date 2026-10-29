@@ -16,7 +16,7 @@ stage=$(mktemp -d /tmp/site-checker2-install.XXXXXX)
 # Keep installation and backup files on failure for inspection.
 trap 'echo "Временные файлы установки: $stage"' EXIT
 sed '1,/^__SITE_CHECKER2_PAYLOAD__$/d' "$0" | base64 -d > "$stage/payload.tar.gz"
-echo '4c62a81c20f0bfde1dd01f9ae7d4415223b8f062493cee0540361b072d406bba  '"$stage/payload.tar.gz" | sha256sum -c - >/dev/null || { echo 'Контрольная сумма не совпала.' >&2; exit 1; }
+echo '1dd625590c531824a875af855783600d0d8adede58edaf0524f1540f80afd924  '"$stage/payload.tar.gz" | sha256sum -c - >/dev/null || { echo 'Контрольная сумма не совпала.' >&2; exit 1; }
 tar -xzf "$stage/payload.tar.gz" -C "$stage"
 echo 'Проверяем зависимости.'
 deps=""
@@ -70,11 +70,22 @@ while IFS= read -r rel; do
         cp -p "/$rel" "$backup/files/$rel"
         printf '%s\n' "$rel" >> "$backup/previous"
     else printf '%s\n' "$rel" >> "$backup/created"; fi
-    mkdir -p "/$(dirname "$rel")"
+    case "$rel" in
+        etc/site-checker2/config.json) mkdir -p "/$(dirname "$rel")" ;;
+        *) (umask 022; mkdir -p "/$(dirname "$rel")") ;;
+    esac
     cp "$stage/files/$rel" "/$rel"
+    case "$rel" in
+        etc/site-checker2/config.json) chmod 600 "/$rel" ;;
+        usr/libexec/*) chmod 755 "/$rel" ;;
+        *) chmod 644 "/$rel" ;;
+    esac
     expected=$(sha256sum "$stage/files/$rel"); actual=$(sha256sum "/$rel")
     [ "${expected%% *}" = "${actual%% *}" ] || { echo "Не прошла проверка файла $rel" >&2; exit 1; }
 done < "$stage/manifest"
+# Repair app directories left at 0700 by versions local.1/local.2.
+# Never change permissions recursively or expose /etc/site-checker2.
+chmod 755 /www/luci-static/resources/view/site-checker2 /usr/share/site-checker2
 chmod 755 /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-legacy /usr/libexec/site-checker2-uninstall /usr/libexec/rpcd/site-checker2
 if [ "$new_config" -eq 1 ]; then
     sh "$legacy" import "$backup/legacy-v1" "" /etc/site-checker2/config.json "$stage/files/usr/share/site-checker2/validate.jq"
@@ -316,7 +327,7 @@ tDDBdQFhSJ8F+rnMUqW4CL/lcT4C0A4LmKFcFjBDOy1ghnJbwAzpuCBbNf0LDFeCnK4us7tBmTyu
 QnyzqVysFi1+uZT9DrxuKt2y2BdCnjLSekggSb6bqHqjVCYdZ2U/Lsp+CozPXt+HsUFqTY7rInq3
 xENs6PFJVflrwltS8FLgoFimy6phfOoNdrP+C7a5GA+Br8gYYKS8lpyfhXlZQdA8TkCxDFlMYYdN
 kMei1vP5DibY8wWDqFQbMtbxvrFC0kVUZGWjJ1oTiolUBlheWU2D7IIwhddmY1EdQZRHnvsj1OaV
-+A5UaFJg4VXxf3lH5SXE/5rm/9vIxv9aXDrx/3slf/O1Rq1RZbeS+ZP4Cf9B/f9f9HbYy1j/C42l
++A5UaFJg4VXxf3lH5SXE/5rm/9vIxv9aXDrx/3slf/O1Rq1RZbeShZP4Cf9B/f9f9HbYy1j/C42l
 +G6wvP+DPsEn6/9V/JVGoPjh3tmJSq1CSb5WL3B+ze9g2DE/R675NfT7ffgubNuBAD7SD0Vb7I1b
 6NezUop99UsVsbK6Cv8pGU70mFiSP2Vm7EgvaxR0qnE6aUCLPegJGt8DldDe99cpES/ayiR2rDdT
 C6t42nPF7myWVTyHMkh9FLKBBrQCXyuN1VUYGGCi1nU6fdgsy3ssmjRLiQVSqvAb1E2uVEE5ahDS
@@ -410,4 +421,4 @@ kRCk0JXsajxdyWGb2znuQIncYC+5JxPlPCcTUrhv8n43zu/kRuB2W/gf4HSDIbpVITmNBh4AQZoF
 tgMoLDcqc71A88FGS0tF3L3cLkl5INlwc50s8nuK79hRFJRjJ0MrseCWG42cqU4ClPRBQ+CeN+dj
 iSkleynekNjekwx5PD4JSPJN/w1sz+05YfRNtnFU/LfGuVT8D0hozJ3o/6/iL/O2dV2a3PGZ18L0
 h9ILE1/kLhz5kHvhqFfaC0c8Fl846iH4wnHeC3/uh68Lz/tUbuF4b2sWjhGCsXBEmK7Ci4bxKbyY
-/e+EO5/8nfyd/J38nfyd/J38nfyd/J38nfyd/J38nfyd/J38nfyd/P3b/vt/WHnl5QAYAQA=
+/e+EO5/8nfyd/J38nfyd/J38nfyd/J38nfyd/J38nfyd/J38nfyd/P3b/vt/o5zhRAAYAQA=

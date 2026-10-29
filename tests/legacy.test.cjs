@@ -123,3 +123,53 @@ test('existing v2 selections take precedence while replacing v1',{skip:process.p
  let c=JSON.parse(fs.readFileSync(path.join(f.dir,'etc/site-checker2/config.json')));assert.equal(c.sites[0].enabled,false);
  files.forEach(n=>assert.ok(!fs.existsSync(path.join(f.dir,n))));
 });
+async function httpAssets(t,f){
+ const {spawn}=require('node:child_process'),http=require('node:http');
+ const sudo=spawnSync('sudo',['-n','true'],{encoding:'utf8'});
+ if(sudo.status!==0){t.skip('Unprivileged HTTP check needs non-interactive sudo');return null;}
+ // Fixture root was created private by mkdtemp; expose only its traversal for the test server.
+ fs.chmodSync(f.dir,0o755);
+ let proc=spawn('sudo',['-n','-u','nobody','python3',path.join(root,'tools/unprivileged-http.py'),path.join(f.dir,'www')],{stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);
+ try {
+  let port=await new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>reject(new Error('HTTP server startup timeout: '+stderr)),5000);
+   proc.stdout.once('data',b=>{clearTimeout(timer);resolve(Number(b.toString().trim()));});
+   proc.once('error',e=>{clearTimeout(timer);reject(e);});
+   proc.once('exit',code=>{if(code!==0){clearTimeout(timer);reject(new Error('HTTP server failed: '+stderr));}});
+  });
+  async function get(name){return new Promise((resolve,reject)=>{
+   const req=http.get('http://127.0.0.1:'+port+'/luci-static/resources/view/site-checker2/'+name+'?v=test',res=>{
+    let chunks=[];res.on('data',b=>chunks.push(b));res.on('end',()=>resolve({status:res.statusCode,body:Buffer.concat(chunks)}));
+   });req.setTimeout(3000,()=>req.destroy(new Error('HTTP timeout')));req.on('error',reject);
+  });}
+  return [await get('overview.js'),await get('style.css')];
+ } finally {proc.kill('SIGTERM');}
+}
+test('fresh install serves JS and CSS to an unprivileged HTTP client and keeps config private',{skip:process.platform==='win32'},async t=>{
+ let f=installFixture();assert.equal(f.result.status,0,f.result.stderr);
+ const resources='www/luci-static/resources/view/site-checker2';
+ assert.equal(fs.statSync(path.join(f.dir,resources)).mode&0o777,0o755);
+ for(let name of ['overview.js','style.css'])assert.equal(fs.statSync(path.join(f.dir,resources,name)).mode&0o777,0o644);
+ assert.equal(fs.statSync(path.join(f.dir,'etc/site-checker2')).mode&0o777,0o700);
+ assert.equal(fs.statSync(path.join(f.dir,'etc/site-checker2/config.json')).mode&0o777,0o600);
+ let replies=await httpAssets(t,f);if(!replies)return;
+ assert.deepEqual(replies.map(r=>r.status),[200,200]);
+ assert.equal(replies[0].body.toString(),fs.readFileSync(path.join(root,'files',resources,'overview.js'),'utf8'));
+ assert.equal(replies[1].body.toString(),fs.readFileSync(path.join(root,'files',resources,'style.css'),'utf8'));
+});
+test('upgrade repairs reproduced 403 from local.2 permissions without changing v2 settings',{skip:process.platform==='win32'},async t=>{
+ let f=installFixture(true,true);assert.equal(f.result.status,0,f.result.stderr);
+ const resources=path.join(f.dir,'www/luci-static/resources/view/site-checker2');
+ const config=fs.readFileSync(path.join(f.dir,'etc/site-checker2/config.json'));
+ fs.chmodSync(resources,0o700);
+ for(let name of ['overview.js','style.css'])fs.chmodSync(path.join(resources,name),0o600);
+ let before=await httpAssets(t,f);if(!before)return;
+ assert.deepEqual(before.map(r=>r.status),[403,403]);
+ let r=spawnSync(sh,[path.join(f.dir,'install-fixture.sh')],{env:f.env,encoding:'utf8',timeout:15000});
+ assert.ifError(r.error);assert.equal(r.status,0,r.stderr);
+ let after=await httpAssets(t,f);
+ assert.deepEqual(after.map(r=>r.status),[200,200]);
+ assert.deepEqual(fs.readFileSync(path.join(f.dir,'etc/site-checker2/config.json')),config);
+ assert.equal(fs.statSync(path.join(f.dir,'etc/site-checker2/config.json')).mode&0o777,0o600);
+});
