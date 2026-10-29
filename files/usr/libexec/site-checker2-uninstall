@@ -6,7 +6,7 @@ for kind in sites diagnostics route; do
     if [ -d "/tmp/site-checker2/$kind/lock" ]; then echo 'Сначала отмени активные проверки в интерфейсе.' >&2; exit 1; fi
 done
 # Explicit ownership allowlist. User configuration is retained.
-for file in /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-legacy /usr/libexec/rpcd/site-checker2 /usr/share/site-checker2/validate.jq /usr/share/site-checker2/diagnostics.jq /usr/share/site-checker2/VERSION /usr/share/luci/menu.d/luci-app-site-checker2.json /usr/share/rpcd/acl.d/luci-app-site-checker2.json /www/luci-static/resources/view/site-checker2/overview.js /www/luci-static/resources/view/site-checker2/style.css; do rm -f "$file"; done
+for file in /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-detect /usr/libexec/site-checker2-legacy /usr/libexec/rpcd/site-checker2 /usr/share/site-checker2/validate.jq /usr/share/site-checker2/diagnostics.jq /usr/share/site-checker2/VERSION /usr/share/luci/menu.d/luci-app-site-checker2.json /usr/share/rpcd/acl.d/luci-app-site-checker2.json /www/luci-static/resources/view/site-checker2/overview.js /www/luci-static/resources/view/site-checker2/style.css; do rm -f "$file"; done
 rm -f /tmp/luci-indexcache
 /etc/init.d/rpcd reload
 rm -f /usr/libexec/site-checker2-uninstall

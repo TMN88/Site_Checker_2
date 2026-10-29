@@ -140,20 +140,12 @@ native() {
     fi
 }
 detect() {
-    found=""
-    for app in podkop forkop; do
-        if [ -x "$ROOT/usr/bin/$app" ] || [ -f "$ROOT/etc/config/$app" ] || [ -f "$ROOT/usr/lib/opkg/info/$app.control" ]; then found="$found $app"
-        elif [ -z "$ROOT" ] && command -v apk >/dev/null 2>&1 && apk info -e "$app" >/dev/null 2>&1; then found="$found $app"; fi
-    done
-    if [ -x "$ROOT/usr/bin/netshift" ] || [ -f "$ROOT/etc/config/netshift" ]; then found="$found forkozz"; fi
-    set -- $found
-    [ "$#" -ne 0 ] || { error no_application; return 1; }
-    [ "$#" -eq 1 ] || { error multiple_applications; return 1; }
-    APP=$1
-    if [ "$APP" = forkozz ]; then
-        if [ -f "$ROOT/usr/lib/opkg/info/netshift.control" ] || [ -f "$ROOT/usr/lib/opkg/info/luci-app-netshift.control" ]; then error unsupported_netshift; return 1; fi
-        if [ -z "$ROOT" ] && command -v apk >/dev/null 2>&1 && { apk info -e netshift >/dev/null 2>&1 || apk info -e luci-app-netshift >/dev/null 2>&1; }; then error unsupported_netshift; return 1; fi
+    sh "$ROOT/usr/libexec/site-checker2-detect" > "$dir/application.json"
+    if ! jq -e '.ok==true' "$dir/application.json" >/dev/null 2>&1; then
+        cat "$dir/application.json"
+        return 1
     fi
+    APP=$(jq -r .application "$dir/application.json")
 }
 run_diagnostics() {
     detect || return 1
@@ -189,7 +181,10 @@ run_diagnostics() {
 }
 run_route() {
     detect || return 1
-    if [ "$APP" != forkozz ] || [ ! -f "$ROOT/opt/zapret-manager-luci/netshift.uc" ]; then error route_unsupported; return 1; fi
+    if [ "$APP" != forkozz ] || [ ! -f "$ROOT/opt/zapret-manager-luci/netshift.uc" ]; then
+        jq -cn --arg app "$APP" '{ok:false,error:"route_unsupported",applications:[$app]}'
+        return 1
+    fi
     target=$(jq -r '.target // ""' "$dir/request.json")
     target=$(sh "$ROOT/usr/libexec/site-checker2-target" "$target") || { error invalid_target; return 1; }
     native route_service "$ROOT/usr/bin/netshift" get_sing_box_status
@@ -221,9 +216,9 @@ run_route() {
     ipv6=false
     case "$target" in *:*) ipv6=true ;; esac
     case "$address" in *:*) ipv6=true ;; esac
-    jq --arg target "$target" --argjson captured "$captured" --argjson ipv6 "$ipv6" '
+    jq --arg app "$APP" --arg target "$target" --argjson captured "$captured" --argjson ipv6 "$ipv6" '
       .action as $a |
-      {ok:true,state:"done",target:$target,confidence:"rules_only",capture_confirmed:$captured,
+      {ok:true,state:"done",application:$app,target:$target,confidence:"rules_only",capture_confirmed:$captured,
        presumed_exit:(if $ipv6 then "unknown" elif $a=="connection" or $a=="outbound" then (if $captured then "vpn" else "unknown" end)
          elif $a=="direct" or $a=="bypass" or $a=="fallback_direct" then "direct" elif $a=="block" then "blocked" else "unknown" end),
        reason:(if $ipv6 then "Нативный анализатор не полностью учитывает IPv6 CIDR; направление не подтверждено"

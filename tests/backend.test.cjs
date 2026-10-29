@@ -56,9 +56,14 @@ test('reject invalid job paths and duplicate start',()=>{
 });
 test('diagnostics rejects absent and multiple applications',()=>{
  let f=fixture(),c=cfg(f);assert.equal(worker(f,'diagnostics',c).error,'no_application');
- put(f.root,'etc/config/podkop','');put(f.root,'etc/config/forkop','');assert.equal(worker(f,'diagnostics',c).error,'multiple_applications');
+ nativeFixture(f,'podkop');nativeFixture(f,'forkop');assert.equal(worker(f,'diagnostics',c).error,'multiple_applications');
 });
 function nativeFixture(f,app){
+ put(f.root,'etc/init.d/'+app,'#!/bin/sh\nexit 0\n');
+ if(app==='forkop'){
+  put(f.root,'usr/lib/forkop/core/constants.uc','return {FORKOP_VERSION:"2.0.0"};\n');
+  put(f.root,'usr/lib/forkop/service/cli.uc','// real installation footprint fixture\n');
+ }else put(f.root,'usr/lib/'+app+'/constants.sh',app.toUpperCase()+'_VERSION="2.0.0"\n');
  // Only this fixture bypasses native process isolation; production uses setsid.
  put(f.root,'usr/libexec/site-checker2-bounded','#!/bin/sh\nshift\nexec "$@"\n');
  let script=[
@@ -114,7 +119,9 @@ test('Forkozz uses its actual panel diagnostics and route engine; standalone Net
  let r=worker(f,'diagnostics',cfg(f));assert.equal(r.application,'forkozz');assert.equal(r.diagnostic_status,'ok');
  let route=worker(f,'route',cfg(f),{target:'::1'});assert.equal(route.outbound,'youtube-out');assert.equal(route.confidence,'rules_only');assert.equal(route.presumed_exit,'unknown');
  put(f.root,'usr/lib/opkg/info/netshift.control','Package: netshift');
- assert.equal(worker(f,'diagnostics',cfg(f)).error,'unsupported_netshift');
+ assert.equal(worker(f,'diagnostics',cfg(f)).application,'forkozz');
+ const standalone=fixture();nativeFixture(standalone,'netshift');
+ assert.equal(worker(standalone,'diagnostics',cfg(standalone)).error,'unsupported_netshift');
 });
 test('missing native route action never turns into a confident route result',()=>{
  let f=fixture();nativeFixture(f,'netshift');put(f.root,'opt/zapret-manager-luci/netshift.uc','');
@@ -169,4 +176,50 @@ test('native server failures and excluded-router FakeIP are interpreted separate
  let r=worker(f,'diagnostics',cfg(f));
  assert.equal(r.fakeip_status,'not_applicable');assert.ok(!r.issues.some(x=>x.component==='fakeip'));
  assert.ok(r.issues.some(x=>x.component==='server'&&x.status==='error'));assert.equal(r.diagnostic_status,'issues');
+});
+function detectApp(f){
+ const r=spawnSync(sh,['-c','exec sh "$DETECTOR"'],{env:{...f.env,DETECTOR:posix(path.join(f.root,'usr/libexec/site-checker2-detect'))},encoding:'utf8',timeout:5000});
+ assert.ifError(r.error);assert.equal(r.stderr,'');return JSON.parse(r.stdout);
+}
+test('orphan configs and old package control files are not installed applications',()=>{
+ const f=fixture();
+ for(const app of ['podkop','forkop','netshift']){put(f.root,'etc/config/'+app,'old settings');put(f.root,'usr/lib/opkg/info/'+app+'.control','stale metadata');}
+ assert.equal(detectApp(f).error,'no_application');
+});
+for(const app of ['podkop','forkop'])test(app+' ignores orphan configs of the other applications',()=>{
+ const f=fixture();nativeFixture(f,app);
+ for(const old of ['podkop','forkop','netshift'])put(f.root,'etc/config/'+old,'old settings');
+ assert.equal(detectApp(f).application,app);
+ assert.equal(worker(f,'diagnostics',cfg(f)).application,app);
+});
+test('managed Forkozz selects one engine for diagnostics and routing despite old configs',()=>{
+ const f=fixture();nativeFixture(f,'netshift');
+ for(const old of ['podkop','forkop','netshift'])put(f.root,'etc/config/'+old,'old settings');
+ put(f.root,'usr/lib/netshift/zm-managed','');
+ put(f.root,'opt/zapret-manager-luci/netshift.uc','// panel module fixture');
+ put(f.root,'bin/ucode',[
+ '#!/bin/sh','case "$2" in',
+ 'diag) echo \'{"checks":[{"what":"Служба Forkozz","verdict":"ok"},{"what":"sing-box","verdict":"ok"},{"what":"DNS роутера","verdict":"ok"},{"what":"FakeIP","verdict":"ok"}]}\';;',
+ 'route) echo \'{"action":"direct","outbound":"direct-out","rule":"default"}\';;',
+ '*) exit 1;;','esac',''
+ ].join('\n'));
+ assert.equal(detectApp(f).application,'forkozz');
+ assert.equal(worker(f,'diagnostics',cfg(f)).application,'forkozz');
+ assert.equal(worker(f,'route',cfg(f),{target:'1.1.1.1'}).action,'direct');
+});
+function packages(f,names){
+ put(f.root,'bin/opkg','#!/bin/sh\ncase "$*" in\n'+names.map(name=>'*"status '+name+'") echo "Status: install ok installed";;').join('\n')+'\n*) exit 1;;\nesac\n');
+}
+test('registered application takes precedence over an unregistered legacy runtime',()=>{
+ const f=fixture();nativeFixture(f,'podkop');nativeFixture(f,'forkop');packages(f,['forkop']);
+ assert.equal(detectApp(f).application,'forkop');assert.equal(detectApp(f).detection_source,'installed');
+});
+test('two genuinely installed runtimes remain an explicit conflict with their names',()=>{
+ const f=fixture();nativeFixture(f,'podkop');nativeFixture(f,'forkop');packages(f,['podkop','forkop']);
+ assert.deepEqual(detectApp(f).applications,['podkop','forkop']);
+ assert.equal(detectApp(f).error,'multiple_applications');
+});
+test('registered package with missing runtime is reported as incomplete, not selected',()=>{
+ const f=fixture();packages(f,['forkop']);
+ assert.equal(detectApp(f).error,'application_incomplete');assert.deepEqual(detectApp(f).applications,['forkop']);
 });

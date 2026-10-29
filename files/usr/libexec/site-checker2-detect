@@ -1,0 +1,49 @@
+#!/bin/sh
+# Read-only detection; configuration and .control leftovers are not installations.
+set -f
+ROOT="$SC2_ROOT"
+apk_query() { if [ -n "$ROOT" ]; then apk --root "$ROOT" "$@"; else apk "$@"; fi; }
+opkg_query() { if [ -n "$ROOT" ]; then opkg --offline-root "$ROOT" "$@"; else opkg "$@"; fi; }
+installed() {
+    if command -v apk >/dev/null 2>&1; then apk_query info -e "$1" >/dev/null 2>&1
+    elif command -v opkg >/dev/null 2>&1; then opkg_query status "$1" 2>/dev/null | grep -q '^Status:.* installed'
+    else return 1; fi
+}
+runtime() {
+    [ -x "$ROOT/usr/bin/$1" ] && [ -x "$ROOT/etc/init.d/$1" ] || return 1
+    case "$1" in
+        podkop) [ -r "$ROOT/usr/lib/podkop/constants.sh" ] && grep -q PODKOP_VERSION "$ROOT/usr/lib/podkop/constants.sh" ;;
+        forkop) { [ -r "$ROOT/usr/lib/forkop/core/constants.uc" ] && [ -r "$ROOT/usr/lib/forkop/service/cli.uc" ] && grep -q FORKOP_VERSION "$ROOT/usr/lib/forkop/core/constants.uc"; } ||
+                  { [ -r "$ROOT/usr/lib/forkop/constants.sh" ] && grep -Eq 'FORKOP_VERSION|PODKOP_VERSION' "$ROOT/usr/lib/forkop/constants.sh"; } ;;
+        netshift) [ -r "$ROOT/usr/lib/netshift/constants.sh" ] && grep -q NETSHIFT_VERSION "$ROOT/usr/lib/netshift/constants.sh" ;;
+    esac
+}
+registered=""
+manual=""
+broken=""
+for app in podkop forkop; do
+    package=0; installed "$app" && package=1
+    if runtime "$app"; then
+        if [ "$package" -eq 1 ]; then registered="$registered $app"; else manual="$manual $app"; fi
+    elif [ "$package" -eq 1 ]; then broken="$broken $app"; fi
+done
+managed=""
+foreign=false
+if runtime netshift; then
+    if [ -f "$ROOT/usr/lib/netshift/zm-managed" ] || [ -f "$ROOT/opt/zapret-manager-luci/netshift.uc" ]; then managed=" forkozz"
+    else foreign=true; fi
+fi
+# Prefer installed packages / the managed engine to unregistered legacy remnants.
+found="$registered$managed"
+method=installed
+[ -n "$found" ] || { found="$manual"; method=manual_runtime; }
+set -- $found
+if [ "$#" -gt 1 ]; then
+    printf '%s\n' "$@" | jq -R . | jq -s '{ok:false,error:"multiple_applications",applications:.}'
+elif [ "$#" -eq 1 ]; then
+    jq -cn --arg app "$1" --arg method "$method" '{ok:true,application:$app,detection_source:$method}'
+elif [ -n "$broken" ]; then
+    set -- $broken
+    printf '%s\n' "$@" | jq -R . | jq -s '{ok:false,error:"application_incomplete",applications:.}'
+elif [ "$foreign" = true ]; then printf '{"ok":false,"error":"unsupported_netshift"}\n'
+else printf '{"ok":false,"error":"no_application"}\n'; fi

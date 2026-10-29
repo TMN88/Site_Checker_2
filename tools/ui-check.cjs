@@ -18,8 +18,10 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
   window.E=function(tag,attrs,children){
    let el=document.createElement(tag);attrs=attrs||{};
    Object.entries(attrs).forEach(([k,v])=>{
+    // LuCI dom.attr skips null but serializes false as an attribute.
+    if(v==null)return;
     if(typeof v==='function')el.addEventListener(k,v);
-    else if(['checked','disabled','hidden','value'].includes(k))el[k]=v;
+    else if(typeof v==='object')el.setAttribute(k,JSON.stringify(v));
     else el.setAttribute(k,String(v));
    });
    function append(x){if(x==null)return;if(Array.isArray(x))x.forEach(append);else el.appendChild(x instanceof Node?x:document.createTextNode(String(x)));}
@@ -45,7 +47,7 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
   window.viewInstance=new Function(source)();
   document.body.appendChild(window.viewInstance.render(await window.viewInstance.load()));
  },{source,config});
- await page.addStyleTag({content:css});
+ await page.addStyleTag({content:'input[type=checkbox]{display:none!important}'+css});
  assert.deepEqual(await page.evaluate(()=>window.rpcCalls),['get_config','job','job','job']);
  await page.getByRole('tab',{name:'Диагностика',exact:true}).click();
  await page.getByRole('tab',{name:'Куда пойдёт запрос',exact:true}).click();
@@ -55,8 +57,14 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
  await page.evaluate(()=>window.pollTick());
  assert.equal(await page.locator('tbody tr').count(),16);
  await page.getByRole('button',{name:'Настройки',exact:true}).click();
+ assert.equal(await page.locator('.sc2-check input').first().getAttribute('disabled'),null);
+ assert.equal(await page.locator('.sc2-check input').first().isVisible(),true);
  await page.locator('.sc2-check input').first().uncheck();
  await page.getByRole('button',{name:'Сохранить',exact:true}).click();
+ await page.getByRole('button',{name:'Настройки',exact:true}).click();
+ assert.equal(await page.locator('.sc2-check input').first().isChecked(),false);
+ await page.screenshot({path:path.join(out,'ui-settings.png'),fullPage:true});
+ await page.getByRole('button',{name:'Настройки',exact:true}).click();
  await page.getByRole('tab',{name:'Куда пойдёт запрос',exact:true}).click();
  assert.equal(await page.locator('.sc2-shortcuts button').count(),15);
  assert.equal(await page.locator('.sc2-shortcuts button').filter({hasText:'YouTube'}).count(),0);
@@ -82,6 +90,14 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
  await page.locator('.sc2').evaluate(el=>el.setAttribute('data-theme','light'));
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'mobile horizontal overflow');
  await page.screenshot({path:path.join(out,'ui-mobile-light.png'),fullPage:true});
+ await page.evaluate(async()=>{
+  window.L.hasViewPermission=()=>false;
+  document.querySelector('.sc2').replaceWith(window.viewInstance.render(await window.viewInstance.load()));
+ });
+ await page.getByRole('button',{name:'Настройки',exact:true}).click();
+ assert.equal(await page.locator('.sc2-check input').first().isDisabled(),true);
+ assert.equal(await page.getByRole('button',{name:'Сохранить',exact:true}).isDisabled(),true);
+ assert.equal(await page.getByRole('button',{name:'Проверить сейчас',exact:true}).isDisabled(),true);
  assert.deepEqual(errors,[]);
  console.log('UI passed: no automatic checks, tab switching, sites, settings persistence, quick domains, diagnostics, mobile width. Screenshots saved.');
  } finally {await browser.close();}

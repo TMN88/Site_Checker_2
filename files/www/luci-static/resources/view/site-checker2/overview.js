@@ -14,6 +14,7 @@ var calls = {};
 var errors = {
  busy:'Проверка уже выполняется.', invalid_config:'Проверь домены и параметры: до 32 сайтов, таймаут до 15 секунд, до 4 запросов одновременно.',
  no_application:'Podkop, Forkop или Forkozz не обнаружен.',
+ application_incomplete:'Пакет найден, но его исполняемые файлы или библиотеки отсутствуют. Установка обходчика неполна.',
  multiple_applications:'Найдено несколько обходчиков. Диагностика остановлена: нужен единственный источник.',
  unsupported_netshift:'Отдельный NetShift не поддерживается как Forkozz. Нужна совместимая версия Forkozz в Zapret Manager.',
  route_unsupported:'Установленный обходчик не предоставляет поддерживаемый механизм анализа правил. Маршрут не определён.',
@@ -31,7 +32,13 @@ var reason = {none:'—', dns_error:'Ошибка DNS',connect_error:'Нет с�
  tls_error:'Ошибка TLS',http_error:'HTTP-ошибка: результат неопределён',redirect_limit:'Слишком много переходов',
  network_error:'Сетевая ошибка',invalid_response:'Некорректный ответ',curl_missing:'curl не установлен'};
 function notice(msg) { ui.addNotification(null,E('p',{},msg)); }
-function checked(r) { if(!r || r.ok===false) throw new Error(errors[r && r.error] || 'Не удалось выполнить операцию.'); return r; }
+function errorMessage(r) {
+ var msg=errors[r && r.error] || 'Не удалось выполнить операцию.';
+ var names={podkop:'Podkop',forkop:'Forkop',forkozz:'Forkozz'};
+ if(r && Array.isArray(r.applications))msg+=' ('+r.applications.map(function(a){return names[a]||a;}).join(', ')+')';
+ return msg;
+}
+function checked(r) { if(!r || r.ok===false) throw new Error(errorMessage(r)); return r; }
 function text(v) { return v == null || v === '' ? 'Не определено' : String(v); }
 
 return view.extend({
@@ -65,7 +72,7 @@ return view.extend({
   function showResult(kind,r) {
    var out=outputs[kind]; out.replaceChildren();
    if(!r || r.state==='idle') {out.appendChild(E('p',{'class':'sc2-muted'},'Проверка ещё не запускалась.'));return;}
-   if(r.ok===false) {out.appendChild(E('p',{'class':'sc2-error'},errors[r.error]||'Проверка завершилась с ошибкой.'));return;}
+   if(r.ok===false) {out.appendChild(E('p',{'class':'sc2-error'},errorMessage(r)));return;}
    if(r.state==='running'||r.state==='cancelling') {
     out.appendChild(E('p',{'class':'sc2-muted'},r.state==='running'?'Проверка выполняется…':'Отмена проверки…'));return;
    }
@@ -93,6 +100,7 @@ return view.extend({
      out.appendChild(E('div',{'class':'sc2-issue'},[E('strong',{},(i.status==='error'?'🔴 ':'🟡 ')+i.message),E('p',{},i.recommendation)]));
     });
    } else {
+    if(r.application)out.appendChild(E('h3',{},({podkop:'Podkop',forkop:'Forkop',forkozz:'Forkozz'})[r.application]||r.application));
     out.appendChild(E('p',{'class':'sc2-muted'},'Предполагаемый маршрут по правилам. Фактическое прохождение трафика не подтверждено.'));
     var exits={vpn:'Через настроенный VPN / туннель',direct:'Напрямую через основной маршрут',blocked:'Заблокировано правилом',unknown:'Не определено'};
     [['Назначение',r.target],['Предполагаемый выход',exits[r.presumed_exit]||'Не определено'],['Выход из правила',r.outbound],['Правило',r.matched_rule],['Секция',r.matched_section],['Причина',r.reason]].forEach(function(pair){
@@ -116,9 +124,9 @@ return view.extend({
    }},def[1]);tabs.appendChild(tab);
    var controls=E('div',{'class':'sc2-controls'});
    if(kind==='route') controls.appendChild(target);
-   buttons[kind]=E('button',{'class':'sc2-button sc2-primary',disabled:!canWrite,click:function(){return start(kind);}},def[2]);
+   buttons[kind]=E('button',{'class':'sc2-button sc2-primary',disabled:!canWrite||null,click:function(){return start(kind);}},def[2]);
    controls.appendChild(buttons[kind]);
-   controls.appendChild(E('button',{'class':'sc2-button',disabled:!canWrite,click:function(){
+   controls.appendChild(E('button',{'class':'sc2-button',disabled:!canWrite||null,click:function(){
     return calls.cancel(kind).then(checked).then(function(r){showResult(kind,r);}).catch(function(e){notice(e.message);});
    }},'Отменить'));
    pane.appendChild(controls);
@@ -133,17 +141,17 @@ return view.extend({
   function renderSettings() {
    checks=[];settings.replaceChildren();
    config.sites.forEach(function(s){
-    var box=E('input',{type:'checkbox',checked:s.enabled,disabled:!canWrite});
+    var box=E('input',{type:'checkbox',checked:s.enabled?true:null,disabled:!canWrite||null});
     checks.push(box);settings.appendChild(E('label',{'class':'sc2-check'},[box,' '+s.name+' · '+s.domain]));
    });
-   var custom=E('textarea',{rows:3,placeholder:'Пользовательские домены — по одному в строке','aria-label':'Новые домены',disabled:!canWrite});
+   var custom=E('textarea',{rows:3,placeholder:'Пользовательские домены — по одному в строке','aria-label':'Новые домены',disabled:!canWrite||null});
    settings.appendChild(custom);
    var inputs={};
    [['connect_timeout','Соединение, сек',1,10],['total_timeout','Вся проверка сайта, сек',1,15],['parallel','Одновременно',1,4]].forEach(function(d){
-    inputs[d[0]]=E('input',{type:'number',min:d[2],max:d[3],value:config[d[0]],disabled:!canWrite});
+    inputs[d[0]]=E('input',{type:'number',min:d[2],max:d[3],value:config[d[0]],disabled:!canWrite||null});
     settings.appendChild(E('label',{'class':'sc2-field'},[d[1],inputs[d[0]]]));
    });
-   var save=E('button',{'class':'sc2-button sc2-primary',disabled:!canWrite,click:function(){
+   var save=E('button',{'class':'sc2-button sc2-primary',disabled:!canWrite||null,click:function(){
     var next={sites:config.sites.map(function(s,i){return {name:s.name,domain:s.domain,enabled:checks[i].checked};})};
     custom.value.split(/\s+/).filter(Boolean).forEach(function(d){next.sites.push({name:d,domain:d.toLowerCase(),enabled:true});});
     Object.keys(inputs).forEach(function(k){next[k]=Number(inputs[k].value);});

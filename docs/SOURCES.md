@@ -54,3 +54,7 @@ fk_route_check использует DNS, FakeIP, nft-наборы netshift_subne
 У Podkop, Forkop, NetShift и YouTube Watchdog имеются файлы LICENSE. Перед включением любого их кода проверить конкретные условия и атрибуцию. Ссылки: https://github.com/TMN88/Site_Checker, https://github.com/StressOzz/Zapret-Manager, https://github.com/itdoginfo/podkop, https://github.com/ushan0v/forkop, https://github.com/yandexru45/netshift, https://github.com/TMN88/youtube-watchdog.
 
 Репозитории загружены локально в work/. Checkout NetShift на Windows не выполнен из-за имени файла с двоеточием; исходный файл прочитан непосредственно из Git через git show. Точки интеграции нужно повторно проверить на версиях конкретных роутеров.
+
+## Атрибуты интерфейса LuCI
+
+Проверена реализация DOM.attr: false не пропускается, а передаётся в setAttribute. Для булевых HTML-атрибутов отсутствие задаётся через null. Источник: https://github.com/openwrt/luci/blob/master/modules/luci-base/htdocs/luci-static/resources/luci.js. Браузерный стенд повторяет это поведение.

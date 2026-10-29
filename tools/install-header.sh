@@ -67,7 +67,7 @@ trap finish EXIT
 trap 'exit 1' HUP INT TERM
 while IFS= read -r rel; do
     case "$rel" in
-        usr/libexec/site-checker2|usr/libexec/site-checker2-probe|usr/libexec/site-checker2-bounded|usr/libexec/site-checker2-target|usr/libexec/site-checker2-legacy|usr/libexec/site-checker2-uninstall|usr/libexec/rpcd/site-checker2|usr/share/site-checker2/*|usr/share/luci/menu.d/luci-app-site-checker2.json|usr/share/rpcd/acl.d/luci-app-site-checker2.json|www/luci-static/resources/view/site-checker2/*|etc/site-checker2/config.json) ;;
+        usr/libexec/site-checker2|usr/libexec/site-checker2-probe|usr/libexec/site-checker2-bounded|usr/libexec/site-checker2-target|usr/libexec/site-checker2-detect|usr/libexec/site-checker2-legacy|usr/libexec/site-checker2-uninstall|usr/libexec/rpcd/site-checker2|usr/share/site-checker2/*|usr/share/luci/menu.d/luci-app-site-checker2.json|usr/share/rpcd/acl.d/luci-app-site-checker2.json|www/luci-static/resources/view/site-checker2/*|etc/site-checker2/config.json) ;;
         *) echo "Небезопасный путь: $rel" >&2; exit 1 ;;
     esac
     if [ "$rel" = etc/site-checker2/config.json ] && [ -f "/$rel" ]; then continue; fi
@@ -92,7 +92,7 @@ done < "$stage/manifest"
 # Repair app directories left at 0700 by versions local.1/local.2.
 # Never change permissions recursively or expose /etc/site-checker2.
 chmod 755 /www/luci-static/resources/view/site-checker2 /usr/share/site-checker2
-chmod 755 /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-legacy /usr/libexec/site-checker2-uninstall /usr/libexec/rpcd/site-checker2
+chmod 755 /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-detect /usr/libexec/site-checker2-legacy /usr/libexec/site-checker2-uninstall /usr/libexec/rpcd/site-checker2
 chmod 700 /etc/site-checker2
 chmod 600 /etc/site-checker2/config.json
 /usr/libexec/site-checker2 get_config | jq -e '.ok == true' >/dev/null
