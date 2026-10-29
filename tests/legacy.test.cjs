@@ -10,7 +10,7 @@ const files=['usr/lib/lua/luci/controller/sitecheck.lua','usr/lib/lua/luci/view/
 const baseEnv=Object.fromEntries(Object.entries(process.env).filter(([k])=>k.toLowerCase()!=='path'));
 function put(dir,name,body){let p=path.join(dir,name);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,body);fs.chmodSync(p,0o755);}
 function fixture(old=true){
- let dir=fs.mkdtempSync(path.join(base,'case-')),backup=path.join(dir,'backup');
+ let dir=fs.mkdtempSync(path.join(base,'case-')),state=path.join(dir,'legacy-plan');
  fs.mkdirSync(path.join(dir,'bin'),{recursive:true});
  if(old)files.forEach((name,i)=>put(dir,name,'original-'+i+'\n'));
  put(dir,'etc/config/network','PRESERVE_NETWORK\n');put(dir,'usr/bin/podkop-vpn-failover','PRESERVE_SERVICE\n');put(dir,'usr/libexec/site-checker2','PRESERVE_V2\n');
@@ -20,32 +20,36 @@ function fixture(old=true){
  let env={...baseEnv,PATH:[path.join(dir,'bin'),jqDir,path.dirname(sh),process.env.PATH||process.env.Path].join(path.delimiter),
  SC2_ROOT:posix(dir),SC2_NODE:posix(process.execPath),SC2_HASH:posix(path.join(dir,'hash.cjs')),CALLS:posix(path.join(dir,'calls'))};
  function run(action,...extra){
-  let r=spawnSync(sh,[posix(path.join(root,'files/usr/libexec/site-checker2-legacy')),action,posix(backup),posix(dir),...extra.map(posix)],{env,encoding:'utf8',timeout:20000});
+  let r=spawnSync(sh,[posix(path.join(root,'files/usr/libexec/site-checker2-legacy')),action,posix(state),posix(dir),...extra.map(posix)],{env,encoding:'utf8',timeout:20000});
   assert.ifError(r.error);return r;
  }
  function intact(){for(let [i,n]of files.entries())assert.equal(fs.readFileSync(path.join(dir,n),'utf8'),'original-'+i+'\n');}
  function unrelated(){assert.equal(fs.readFileSync(path.join(dir,'etc/config/network'),'utf8'),'PRESERVE_NETWORK\n');assert.equal(fs.readFileSync(path.join(dir,'usr/bin/podkop-vpn-failover'),'utf8'),'PRESERVE_SERVICE\n');assert.equal(fs.readFileSync(path.join(dir,'usr/libexec/site-checker2'),'utf8'),'PRESERVE_V2\n');}
- return {dir,backup,env,run,intact,unrelated};
+ return {dir,state,env,run,intact,unrelated};
 }
-test('v1 is backed up byte-for-byte and only its exact files are retired',()=>{
- let f=fixture();assert.equal(f.run('snapshot').status,0);f.intact();
+test('v1 is removed without copying files or configuration',()=>{
+ let f=fixture();assert.equal(f.run('plan').status,0);f.intact();
+ assert.ok(!fs.existsSync(path.join(f.state,'files')));
+ assert.ok(!fs.existsSync(path.join(f.state,'restore-helper.sh')));
  assert.equal(f.run('retire').status,0);
- files.forEach((n,i)=>{assert.ok(!fs.existsSync(path.join(f.dir,n)));assert.equal(fs.readFileSync(path.join(f.backup,'files',n),'utf8'),'original-'+i+'\n');});f.unrelated();
- assert.equal(f.run('restore').status,0);f.intact();f.unrelated();
+ files.forEach(n=>assert.ok(!fs.existsSync(path.join(f.dir,n))));f.unrelated();
 });
 test('replacement is safe when v1 is absent',()=>{
- let f=fixture(false);assert.equal(f.run('snapshot').status,0);assert.equal(f.run('retire').status,0);f.unrelated();
+ let f=fixture(false);assert.equal(f.run('plan').status,0);assert.equal(f.run('retire').status,0);f.unrelated();
 });
-test('a changed v1 file prevents any removal',()=>{
- let f=fixture();assert.equal(f.run('snapshot').status,0);put(f.dir,files[0],'modified\n');
- assert.notEqual(f.run('retire').status,0);assert.ok(!fs.existsSync(path.join(f.backup,'retiring')));files.forEach(n=>assert.ok(fs.existsSync(path.join(f.dir,n))));f.unrelated();
+test('edited old settings are deleted rather than backed up or imported',()=>{
+ let f=fixture();assert.equal(f.run('plan').status,0);
+ put(f.dir,'etc/config/sitecheck','PRIVATE_V1_CONFIG_SENTINEL');
+ assert.equal(f.run('retire').status,0);
+ for(let name of fs.readdirSync(f.state))assert.ok(!fs.readFileSync(path.join(f.state,name),'utf8').includes('PRIVATE_V1_CONFIG_SENTINEL'));
+ files.forEach(n=>assert.ok(!fs.existsSync(path.join(f.dir,n))));f.unrelated();
 });
 test('a directory in place of a v1 file fails before replacement',()=>{
- let f=fixture(false);fs.mkdirSync(path.join(f.dir,files[0]),{recursive:true});assert.notEqual(f.run('snapshot').status,0);f.unrelated();
+ let f=fixture(false);fs.mkdirSync(path.join(f.dir,files[0]),{recursive:true});assert.notEqual(f.run('plan').status,0);f.unrelated();
 });
 test('symlink v1 assets are refused',{skip:process.platform==='win32'},()=>{
  let f=fixture(false);fs.mkdirSync(path.dirname(path.join(f.dir,files[0])),{recursive:true});fs.symlinkSync(path.join(f.dir,'etc/config/network'),path.join(f.dir,files[0]));
- assert.notEqual(f.run('snapshot').status,0);f.unrelated();
+ assert.notEqual(f.run('plan').status,0);f.unrelated();
 });
 function pm(f,type,planExtra=false,foreign=false){
  let script;
@@ -61,27 +65,18 @@ function pm(f,type,planExtra=false,foreign=false){
  put(f.dir,'bin/'+type,script);
 }
 for(let type of ['apk','opkg'])test(type+' removes only the registered first-version package',()=>{
- let f=fixture();pm(f,type);assert.equal(f.run('snapshot').status,0);assert.equal(f.run('retire').status,0);
+ let f=fixture();pm(f,type);assert.equal(f.run('plan').status,0);assert.equal(f.run('retire').status,0);
  let calls=fs.readFileSync(path.join(f.dir,'calls'),'utf8');assert.ok(calls.includes('REMOVED_PACKAGE'));assert.ok(!calls.includes('--autoremove'));f.unrelated();
 });
 for(let type of ['apk','opkg'])test(type+' refuses extra package impact before deleting v1',()=>{
- let f=fixture();pm(f,type,true);assert.equal(f.run('snapshot').status,0);assert.notEqual(f.run('retire').status,0);f.intact();f.unrelated();
+ let f=fixture();pm(f,type,true);assert.equal(f.run('plan').status,0);assert.notEqual(f.run('retire').status,0);f.intact();f.unrelated();
  assert.ok(!fs.readFileSync(path.join(f.dir,'calls'),'utf8').includes('REMOVED_PACKAGE'));
 });
 test('package-owned unrelated files block migration',()=>{
- let f=fixture();pm(f,'apk',false,true);assert.notEqual(f.run('snapshot').status,0);f.intact();f.unrelated();
+ let f=fixture();pm(f,'apk',false,true);assert.notEqual(f.run('plan').status,0);f.intact();f.unrelated();
 });
-test('available UCI selections and custom domains migrate into a new v2 config',()=>{
- let f=fixture();assert.equal(f.run('snapshot').status,0);
- let config=path.join(f.dir,'new.json');fs.copyFileSync(path.join(root,'files/etc/site-checker2/config.json'),config);
- put(f.dir,'bin/uci',[
- '#!/bin/sh','case "$*" in',
- '*"show sitecheck"*) printf "sitecheck.youtube=site\\nsitecheck.custom=site\\n";;',
- '*"sitecheck.youtube.name"*) echo YouTube;;','*"sitecheck.youtube.domain"*) echo https://www.youtube.com/;;','*"sitecheck.youtube.enabled"*) echo 0;;',
- '*"sitecheck.custom.name"*) echo Custom;;','*"sitecheck.custom.domain"*) echo https://example.com/path;;','*"sitecheck.custom.enabled"*) echo 1;;','*) exit 1;;','esac',''].join('\n'));
- let result=f.run('import',config,path.join(root,'files/usr/share/site-checker2/validate.jq'));
- assert.equal(result.status,0,result.stderr);
- let c=JSON.parse(fs.readFileSync(config,'utf8'));assert.equal(c.sites[0].enabled,false);assert.equal(c.sites.at(-1).domain,'example.com');f.intact();f.unrelated();
+test('obsolete restore and import operations are not supported',()=>{
+ let f=fixture();assert.notEqual(f.run('restore').status,0);assert.notEqual(f.run('import').status,0);f.intact();
 });
 function installFixture(old=true,existingConfig=false,failRpc=false){
  let f=fixture(old);
@@ -106,11 +101,12 @@ function installFixture(old=true,existingConfig=false,failRpc=false){
  assert.ifError(r.error);
  return {...f,result:r};
 }
-test('full installer replaces v1 only after v2 validation and keeps a persistent backup',{skip:process.platform==='win32'},()=>{
+test('full installer replaces v1 without a persistent backup',{skip:process.platform==='win32'},()=>{
  let f=installFixture();assert.equal(f.result.status,0,f.result.stderr);
  files.forEach(n=>assert.ok(!fs.existsSync(path.join(f.dir,n)),n));
- let backups=fs.readdirSync(path.join(f.dir,'root'));assert.equal(backups.length,1);
- files.forEach((n,i)=>assert.equal(fs.readFileSync(path.join(f.dir,'root',backups[0],'legacy-v1/files',n),'utf8'),'original-'+i+'\n'));
+ assert.deepEqual(fs.readdirSync(path.join(f.dir,'root')),[]);
+ function scan(dir){for(let e of fs.readdirSync(dir,{withFileTypes:true})){let p=path.join(dir,e.name);if(e.isDirectory())scan(p);else if(e.isFile())assert.ok(!fs.readFileSync(p).includes(Buffer.from('original-6')),'v1 config was copied: '+p);}}
+ scan(f.dir);
  assert.equal(fs.readFileSync(path.join(f.dir,'usr/libexec/site-checker2'),'utf8'),fs.readFileSync(path.join(root,'files/usr/libexec/site-checker2'),'utf8'));
  assert.equal(fs.readFileSync(path.join(f.dir,'etc/config/network'),'utf8'),'PRESERVE_NETWORK\n');
 });

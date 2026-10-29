@@ -41,23 +41,29 @@ if [ -f /etc/site-checker2/config.json ]; then
     }
 fi
 # Save only this application's owned files. Never touch router/VPN configuration.
-backup="/root/site-checker2-backup-$(date +%Y%m%d-%H%M%S)-$$"
+backup="$stage/rollback-v2"
 mkdir -p "$backup/files"
 : > "$backup/previous"
 : > "$backup/created"
 legacy="$stage/files/usr/libexec/site-checker2-legacy"
-sh "$legacy" snapshot "$backup/legacy-v1"
-new_config=1
-[ ! -f /etc/site-checker2/config.json ] || new_config=0
+sh "$legacy" plan "$stage/legacy-plan"
+v2_ready=0
 rollback() {
     set +e
     echo "Ошибка установки. Возвращаем прежние файлы; резервная копия: $backup" >&2
     while IFS= read -r rel; do cp -p "$backup/files/$rel" "/$rel"; done < "$backup/previous"
     while IFS= read -r rel; do rm -f "/$rel"; done < "$backup/created"
-    if [ -f "$backup/legacy-v1/retiring" ]; then sh "$legacy" restore "$backup/legacy-v1"; fi
     /etc/init.d/rpcd reload >/dev/null 2>&1 || true
 }
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then rollback; fi; echo "Временные файлы: $stage"' EXIT
+finish() {
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if [ "$v2_ready" -eq 0 ]; then rollback
+        else echo 'Версия 2 установлена. Удаление первой версии не завершилось; проверь ошибку выше.' >&2; fi
+    fi
+    echo "Временные файлы: $stage"
+}
+trap finish EXIT
 trap 'exit 1' HUP INT TERM
 while IFS= read -r rel; do
     case "$rel" in
@@ -87,9 +93,6 @@ done < "$stage/manifest"
 # Never change permissions recursively or expose /etc/site-checker2.
 chmod 755 /www/luci-static/resources/view/site-checker2 /usr/share/site-checker2
 chmod 755 /usr/libexec/site-checker2 /usr/libexec/site-checker2-probe /usr/libexec/site-checker2-bounded /usr/libexec/site-checker2-target /usr/libexec/site-checker2-legacy /usr/libexec/site-checker2-uninstall /usr/libexec/rpcd/site-checker2
-if [ "$new_config" -eq 1 ]; then
-    sh "$legacy" import "$backup/legacy-v1" "" /etc/site-checker2/config.json "$stage/files/usr/share/site-checker2/validate.jq"
-fi
 chmod 700 /etc/site-checker2
 chmod 600 /etc/site-checker2/config.json
 /usr/libexec/site-checker2 get_config | jq -e '.ok == true' >/dev/null
@@ -101,7 +104,8 @@ for attempt in 1 2 3; do
 done
 [ "$ready" -eq 1 ] || { echo 'RPC Site Checker 2.0 не зарегистрирован.' >&2; exit 1; }
 # Retire v1 only after v2's files, configuration and RPC have passed validation.
-sh "$legacy" retire "$backup/legacy-v1"
+v2_ready=1
+sh "$legacy" retire "$stage/legacy-plan"
 # LuCI's generated menu cache is safe to regenerate.
 rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
 for cache in /tmp/luci-modulecache/*sitecheck*; do [ ! -f "$cache" ] || rm -f "$cache"; done
