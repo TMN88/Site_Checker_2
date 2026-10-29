@@ -29,6 +29,9 @@ out = root / f'outputs/site-checker2-{version}.sh'
 assert out.read_bytes() == script
 assert hashlib.sha256(script).hexdigest() in out.with_suffix('.sh.sha256').read_text()
 assert b'@PAYLOAD_SHA@' not in header
+# OpenWrt jq may be built without Oniguruma; shipped filters must not require it.
+for file in [*(root/'files/usr/share/site-checker2').glob('*.jq'),root/'files/usr/libexec/site-checker2-connections']:
+    assert not re.search(r'\b(?:test|match|capture|scan|sub|gsub|splits)\s*\(',file.read_text(encoding='utf-8')), 'Regex-dependent jq operation: '+str(file)
 if sys.platform == 'win32':
     sh = Path.home() / '.cache/codex-runtimes/codex-primary-runtime/dependencies/native/git/usr/bin/sh.exe'
 else:

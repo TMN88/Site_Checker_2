@@ -1,5 +1,5 @@
 # Explicit projection: never return controller credentials, URLs or raw configuration.
-def clean($n): if type=="string" or type=="number" then tostring | gsub("[\u0000-\u001f\u007f]";"") | if test("://|(?i)bearer |private.?key|password|secret") then "[скрыто]" else .[0:$n] end else "" end;
+def clean($n): if type=="string" or type=="number" then tostring | explode | map(select(.>=32 and .!=127)) | implode | (ascii_downcase) as $low | if ($low | contains("://") or contains("bearer ") or contains("private") or contains("password") or contains("secret")) then "[скрыто]" else .[0:$n] end else "" end;
 (if $app=="forkop" then
    if (.status|type)=="number" and .status>=200 and .status<300 then
      if (.body|type)=="string" then (try (.body|fromjson) catch null) else .value end

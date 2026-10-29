@@ -90,7 +90,9 @@ worker_cleanup() {
     for child in $children; do kill -TERM "$child" 2>/dev/null; done
     for child in $children; do wait "$child" 2>/dev/null; done
     if [ ! -f "$dir/result.json" ]; then
-        jq -cn '{ok:false,state:"failed",error:"cancelled_or_failed"}' > "$dir/result.tmp"
+        failure=${worker_error:-worker_failed}
+        if [ "$failure" = worker_failed ] && grep -q 'compiled without ONIGURUMA' "$dir/log" 2>/dev/null; then failure=jq_incompatible; fi
+        jq -cn --arg failure "$failure" '{ok:false,state:"failed",error:$failure}' > "$dir/result.tmp"
         mv "$dir/result.tmp" "$dir/result.json"
     fi
     rm -f "$dir/lock/pid"
@@ -261,7 +263,7 @@ case "$1" in
         children=""
         : > "$dir/missing"
         trap 'worker_cleanup' EXIT
-        trap 'exit 1' INT TERM HUP
+        trap 'worker_error=cancelled; exit 1' INT TERM HUP
         case "$2" in sites) run_sites ;; diagnostics) run_diagnostics ;; route) run_route ;; live_sites|connections) run_connections ;; esac > "$dir/output"
         if jq -e 'type=="object"' "$dir/output" >/dev/null 2>&1; then
             jq '. + {state:"done"}' "$dir/output" > "$dir/result.tmp" && mv "$dir/result.tmp" "$dir/result.json"

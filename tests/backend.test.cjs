@@ -222,6 +222,22 @@ test('asynchronous start completes and exposes its result through job polling',a
  }
  assert.equal(r.state,'done');assert.equal(r.results[0].status,'available');
 });
+
+test('worker processing failures are not reported as user cancellation',async()=>{
+ for(const [message,expected] of [['processing failed','worker_failed'],['jq was compiled without ONIGURUMA regex library','jq_incompatible']]){
+  const f=fixture();nativeFixture(f,'forkop');
+  put(f.root,'usr/bin/forkop','#!/bin/sh\necho \'{"status":200,"body":"{\\"connections\\":[]}"}\'\n');
+  put(f.root,'usr/share/site-checker2/connections.jq','error('+JSON.stringify(message)+')\n');
+  assert.equal(f.run('start','connections').state,'running');
+  let result;
+  for(let i=0;i<40;i++){
+   result=f.run('job','connections');if(result.state==='failed')break;
+   await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  assert.equal(result.error,expected);assert.equal(result.ok,false);
+  assert.ok(fs.readFileSync(path.join(f.root,'tmp/site-checker2/connections/log'),'utf8').includes(message));
+ }
+});
 test('process-group deadline cleans up native descendants',{skip:process.platform==='win32'},async()=>{
  let f=fixture();
  put(f.root,'bin/hanging-native','#!/bin/sh\nsh -c \'trap "" TERM; sleep 60\' &\necho "$!" > "$CHILD_PID_FILE"\nwait\n');

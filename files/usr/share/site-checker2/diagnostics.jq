@@ -2,7 +2,7 @@ def issue($component;$state;$message;$recommendation):
  {component:$component,status:$state,message:$message,recommendation:$recommendation};
 def flag: if . == true or . == 1 then true elif . == false or . == 0 then false else null end;
 def health($v): if $v == true then "ok" elif $v == false then "error" else "unknown" end;
-def display: if type=="string" or type=="number" then tostring | gsub("[\u0000-\u001f\u007f]";" ") | if test("://|(?i)bearer |private.?key|password|secret") then "[адрес или секрет скрыт]" else .[0:512] end else "не определено" end;
+def display: if type=="string" or type=="number" then tostring | explode | map(if .<32 or .==127 then 32 else . end) | implode | (ascii_downcase) as $low | if ($low | contains("://") or contains("bearer ") or contains("private") or contains("password") or contains("secret")) then "[адрес или секрет скрыт]" else .[0:512] end else "не определено" end;
 def yesno: flag | if .==true then "да" elif .==false then "нет" else "не определено" end;
 def detail($label;$status;$value;$source): {label:$label,status:$status,value:$value,source:$source};
 def array: if type=="array" then . else [] end;

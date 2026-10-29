@@ -10,12 +10,19 @@ else cfg=$(uci -q get podkop.settings.config_path); fi
 case "$cfg" in /*) ;; *) exit 1 ;; esac
 cfg="$ROOT$cfg"
 [ -r "$cfg" ] || exit 1
-endpoint=$(jq -er '.experimental.clash_api.external_controller | select(type=="string") | select(test("^(localhost|[0-9.]+|\\[[0-9A-Fa-f:]+\\]):[0-9]{1,5}$"))' "$cfg") || exit 1
+endpoint=$(jq -er '.experimental.clash_api.external_controller | select(type=="string" and length>0 and length<=300) | select(explode|all(.>=33 and .<=126))' "$cfg") || exit 1
 port=${endpoint##*:}
+case "$port" in ''|*[!0-9]*) exit 1 ;; esac
+[ "${#port}" -le 5 ] || exit 1
 [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || exit 1
 host=${endpoint%:*}
+case "$host" in
+    localhost) ;;
+    \[*\]) inside=${host#\[}; inside=${inside%\]}; case "$inside" in ''|*[!0-9A-Fa-f:]*) exit 1 ;; esac ;;
+    ''|*[!0-9.]*) exit 1 ;;
+esac
 case "$host" in 0.0.0.0|'[::]') host=127.0.0.1 ;; esac
 # The secret never appears in command arguments, output or browser results.
-jq -er '(.experimental.clash_api.secret // "") | select(type=="string") | select(test("[\\r\\n]")|not) | if length>0 then "Authorization: Bearer "+. else "" end' "$cfg" > "$dir/controller-header" || exit 1
+jq -er '(.experimental.clash_api.secret // "") | select(type=="string") | select(explode|all(.!=13 and .!=10)) | if length>0 then "Authorization: Bearer "+. else "" end' "$cfg" > "$dir/controller-header" || exit 1
 trap 'rm -f "$dir/controller-header"' EXIT
 curl -q --silent --fail --noproxy '*' --proto '=http' --connect-timeout 2 --max-time 5 --max-filesize 2097152 --header "@$dir/controller-header" "http://$host:$port/connections"
