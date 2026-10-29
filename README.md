@@ -36,7 +36,7 @@
 wget -O /tmp/site-checker2-install.sh https://raw.githubusercontent.com/TMN88/Site_Checker_2/main/install.sh && sh /tmp/site-checker2-install.sh
 ~~~
 
-Установщик допускает OpenWrt 24.10.x и 25.12.x, выбирает opkg/apk, при необходимости устанавливает curl, jq, setsid, rpcd, luci-base, ca-bundle. Он проверяет регистрацию RPC и восстанавливает свои файлы при ошибке. Работа на этих прошивках пока не подтверждена реальной установкой.
+Установщик допускает OpenWrt 24.10.x и 25.12.x, выбирает opkg/apk, при необходимости устанавливает curl, jq, setsid, rpcd, luci-base, ca-bundle. Он проверяет регистрацию RPC и восстанавливает свои файлы при ошибке. local.6 установлена и проверена на одном OpenWrt 25.12.5 / aarch64 с Forkozz; 24.10.x и другие установки ещё не подтверждены аппаратно. См. [проверку на роутере](docs/HARDWARE-VALIDATION.md).
 
 Удаление выполняется вручную:
 
