@@ -58,3 +58,9 @@ fk_route_check использует DNS, FakeIP, nft-наборы netshift_subne
 ## Атрибуты интерфейса LuCI
 
 Проверена реализация DOM.attr: false не пропускается, а передаётся в setAttribute. Для булевых HTML-атрибутов отсутствие задаётся через null. Источник: https://github.com/openwrt/luci/blob/master/modules/luci-base/htdocs/luci-static/resources/luci.js. Браузерный стенд повторяет это поведение.
+
+## Текущие сайты и соединения, local.5
+
+Изучены локальные первичные исходники: StressOzz/Zapret-Manager 302b0e46710bd8096f4c299c37cb0162e76c4445, ZapretManager_LuCI.sh: cmd_conns, cmd_diag и renderCheck. Вызывается существующий netshift.uc conns; исходный код функций в поставку не переносится. Отображение, группировка и проекция результата написаны самостоятельно.
+
+Forkop 9544f3de09c62c935e1147147136234594d04f02: service/cli.uc clash_api, singbox/clash_api.uc request возвращает status/body. Вызов строго GET /connections. Podkop c654bf5da75309754e3fb63b9441981db65fff68: settings.config_path, experimental.clash_api.external_controller/secret. Читается только существующая конфигурация; включение API и изменение настроек не выполняются. Совместимость этих точек вызова с установленными версиями нужно подтвердить на роутере.

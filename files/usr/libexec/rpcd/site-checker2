@@ -3,7 +3,7 @@
 case "$1" in
 list)
 cat <<'JSON'
-{"get_config":{},"save_config":{"config":{}},"start_sites":{},"start_diagnostics":{},"start_route":{"target":"str"},"job":{"kind":"str"},"cancel":{"kind":"str"}}
+{"get_config":{},"save_config":{"config":{}},"start_sites":{},"start_diagnostics":{},"start_live_sites":{},"start_connections":{},"job":{"kind":"str"},"cancel":{"kind":"str"}}
 JSON
 ;;
 call)
@@ -13,7 +13,8 @@ call)
       save_config) printf '%s' "$input" | jq '.config' | /usr/libexec/site-checker2 save_config ;;
       start_sites) printf '{}' | /usr/libexec/site-checker2 start sites ;;
       start_diagnostics) printf '{}' | /usr/libexec/site-checker2 start diagnostics ;;
-      start_route) printf '%s' "$input" | jq '{target}' | /usr/libexec/site-checker2 start route ;;
+      start_live_sites) printf '{}' | /usr/libexec/site-checker2 start live_sites ;;
+      start_connections) printf '{}' | /usr/libexec/site-checker2 start connections ;;
       job|cancel)
         kind=$(printf '%s' "$input" | jq -r '.kind // ""')
         /usr/libexec/site-checker2 "$2" "$kind"

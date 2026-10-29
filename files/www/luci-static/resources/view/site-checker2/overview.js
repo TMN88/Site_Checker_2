@@ -7,7 +7,7 @@
 var calls = {};
 [
  ['get_config', []], ['save_config', ['config']], ['start_sites', []],
- ['start_diagnostics', []], ['start_route', ['target']], ['job', ['kind']], ['cancel', ['kind']]
+ ['start_diagnostics', []], ['start_live_sites', []], ['start_connections', []], ['job', ['kind']], ['cancel', ['kind']]
 ].forEach(function(def) {
  calls[def[0]] = rpc.declare({object:'site-checker2',method:def[0],params:def[1],expect:{}});
 });
@@ -28,6 +28,8 @@ var errors = {
  state_error:'Не удалось подготовить временные файлы.',
  save_failed:'Не удалось сохранить настройки.'
 };
+errors.connections_unavailable='Не удалось прочитать текущие соединения sing-box. Проверь, что обходчик работает и его API соединений доступен.';
+errors.connections_unsupported='Установленная версия обходчика не предоставляет поддерживаемый список соединений.';
 var reason = {none:'—', dns_error:'Ошибка DNS',connect_error:'Нет соединения',timeout:'Истёк таймаут',
  tls_error:'Ошибка TLS',http_error:'HTTP-ошибка: результат неопределён',redirect_limit:'Слишком много переходов',
  network_error:'Сетевая ошибка',invalid_response:'Некорректный ответ',curl_missing:'curl не установлен'};
@@ -43,7 +45,7 @@ function text(v) { return v == null || v === '' ? 'Не определено' : 
 
 return view.extend({
  load:function() {
-  return Promise.all([calls.get_config(),calls.job('sites'),calls.job('diagnostics'),calls.job('route')]);
+  return Promise.all([calls.get_config(),calls.job('sites'),calls.job('diagnostics')]);
  },
  render:function(data) {
   var self=this, config=checked(data[0]).config, active={}, outputs={}, buttons={}, checks=[];
@@ -60,14 +62,32 @@ return view.extend({
   ]);
   try { var theme=localStorage.getItem('site-checker2-theme'); if(theme)root.setAttribute('data-theme',theme); } catch(e){}
   root.appendChild(title);
-  var tabs=E('div',{'class':'sc2-tabs',role:'tablist'}), panes={}, shortcuts=E('div',{'class':'sc2-shortcuts'});
+  var tabs=E('div',{'class':'sc2-tabs',role:'tablist'}), panes={};
   root.appendChild(tabs);
-  var target=E('input',{type:'text',placeholder:'youtube.com или IP-адрес',maxlength:253,'aria-label':'Назначение'});
-  function quickButtons() {
-   shortcuts.replaceChildren();
-   config.sites.filter(function(s){return s.enabled;}).forEach(function(s){
-    shortcuts.appendChild(E('button',{'class':'sc2-button',click:function(){target.value=s.domain;target.focus();}},s.name));
+  var appNames={podkop:'Podkop',forkop:'Forkop',forkozz:'Forkozz'};
+  function trafficResult(kind,r,out) {
+   out.appendChild(E('h3',{},appNames[r.application]||text(r.application)));
+   out.appendChild(E('p',{'class':'sc2-muted'},'Снимок текущих соединений sing-box по нажатию кнопки. Это не история посещений и не проверка доступности.'));
+   if(r.captured_at)out.appendChild(E('p',{'class':'sc2-muted'},'Получено: '+new Date(r.captured_at*1000).toLocaleString()+' · Соединений: '+text(r.total)));
+   var groups=new Map();
+   (r.conns||[]).forEach(function(c){
+    var host=c.host||c.dst;if(!host)return;
+    var key=JSON.stringify(kind==='live_sites'?[host,c.out]:[c.src,host,c.dport,c.proto,c.out]);
+    if(!groups.has(key))groups.set(key,{c:c,n:0,devices:new Set()});
+    var row=groups.get(key);row.n++;row.devices.add(c.dev?c.dev+' ('+c.src+')':c.src||'Не определено');
    });
+   if(!groups.size){out.appendChild(E('p',{'class':'sc2-muted'},'Сейчас соединений нет. Открой сайт на устройстве и нажми «Обновить».'));return;}
+   var table=E('table',{'class':'sc2-table sc2-traffic-table'}),body=E('tbody');
+   var labels=kind==='live_sites'?['Сайт / IP','Устройства','Секция / выход','Соединений']:['Устройство','Назначение','Протокол','Секция / выход','Соединений'];
+   table.appendChild(E('thead',{},E('tr',{},labels.map(function(l){return E('th',{},l);}))));
+   groups.forEach(function(g){
+    var c=g.c,dst=c.host||c.dst;
+    if(kind==='connections'&&c.dport)dst=(!c.host&&dst.indexOf(':')>=0?'['+dst+']':dst)+':'+c.dport;
+    var values=kind==='live_sites'?[c.host||c.dst,Array.from(g.devices).join(', '),c.out||'Напрямую',g.n]:[Array.from(g.devices).join(', '),dst,c.proto||'Не определено',c.out||'Напрямую',g.n];
+    body.appendChild(E('tr',{},values.map(function(v,i){return E('td',{'data-label':labels[i]},String(v));})));
+   });
+   table.appendChild(body);out.appendChild(table);
+   if(r.truncated)out.appendChild(E('p',{'class':'sc2-muted'},'Показана часть соединений: '+(r.conns||[]).length+' из '+text(r.total)+'.'));
   }
   function showResult(kind,r) {
    var out=outputs[kind]; out.replaceChildren();
@@ -91,7 +111,7 @@ return view.extend({
     }); table.appendChild(tbody);out.appendChild(table);
     out.appendChild(E('p',{'class':'sc2-muted'},'Проверка идёт с роутера. Доступность главной страницы не гарантирует воспроизведение видео и работу всех функций сайта.'));
    } else if(kind==='diagnostics') {
-    out.appendChild(E('h3',{},text(r.application)));
+    out.appendChild(E('h3',{},appNames[r.application]||text(r.application)));
     out.appendChild(E('p',{'class':'sc2-muted'},'Установлено: '+text(r.installed_version)+' · Последняя версия: '+text(r.latest_version)));
     if(r.diagnostic_status==='ok' && Array.isArray(r.issues) && !r.issues.length)
      out.appendChild(E('p',{'class':'sc2-success'},'✅ ВСЁ ОК'));
@@ -99,23 +119,30 @@ return view.extend({
     else r.issues.forEach(function(i){
      out.appendChild(E('div',{'class':'sc2-issue'},[E('strong',{},(i.status==='error'?'🔴 ':'🟡 ')+i.message),E('p',{},i.recommendation)]));
     });
+    if(Array.isArray(r.checks)&&r.checks.length){
+     var details=E('table',{'class':'sc2-table sc2-diagnostic-table'}),rows=E('tbody');
+     var heads=['Что проверялось','Результат','Полученные значения'];
+     var states={ok:'🟢 В порядке',error:'🔴 Ошибка',warning:'🟡 Внимание',unknown:'⚪ Не подтверждено',info:'ℹ Сведения',not_applicable:'— Не применяется'};
+     details.appendChild(E('thead',{},E('tr',{},heads.map(function(h){return E('th',{},h);}))));
+     r.checks.forEach(function(c){rows.appendChild(E('tr',{},[
+      E('td',{'data-label':heads[0]},[text(c.label),E('small',{},'Источник: '+text(c.source))]),
+      E('td',{'data-label':heads[1]},states[c.status]||states.unknown),
+      E('td',{'data-label':heads[2]},text(c.value))
+     ]));});
+     details.appendChild(rows);out.appendChild(details);
+    }
    } else {
-    if(r.application)out.appendChild(E('h3',{},({podkop:'Podkop',forkop:'Forkop',forkozz:'Forkozz'})[r.application]||r.application));
-    out.appendChild(E('p',{'class':'sc2-muted'},'Предполагаемый маршрут по правилам. Фактическое прохождение трафика не подтверждено.'));
-    var exits={vpn:'Через настроенный VPN / туннель',direct:'Напрямую через основной маршрут',blocked:'Заблокировано правилом',unknown:'Не определено'};
-    [['Назначение',r.target],['Предполагаемый выход',exits[r.presumed_exit]||'Не определено'],['Выход из правила',r.outbound],['Правило',r.matched_rule],['Секция',r.matched_section],['Причина',r.reason]].forEach(function(pair){
-     out.appendChild(E('p',{},[E('strong',{},pair[0]+': '),text(pair[1])]));
-    });
+    trafficResult(kind,r,out);
    }
   }
   function running(kind,on) { active[kind]=on;buttons[kind].disabled=on||!canWrite; }
   function start(kind) {
    if(active[kind])return;
    running(kind,true);
-   var action=kind==='route'?calls.start_route(target.value.trim()):calls['start_'+kind]();
+   var action=calls['start_'+kind]();
    return action.then(checked).then(function(r){showResult(kind,r);}).catch(function(e){running(kind,false);notice(e.message);});
   }
-  [['sites','Сайты','Проверить сейчас'],['diagnostics','Диагностика','Запустить диагностику'],['route','Куда пойдёт запрос','Проверить']].forEach(function(def,index){
+  [['sites','Сайты','Проверить сейчас'],['diagnostics','Диагностика','Запустить диагностику'],['live_sites','Сайты сейчас','Обновить'],['connections','Соединения','Обновить']].forEach(function(def,index){
    var kind=def[0], pane=E('section',{'class':'sc2-panel',role:'tabpanel',id:'sc2-'+kind});
    panes[kind]=pane;pane.hidden=index!==0;
    var tab=E('button',{'class':'sc2-button',role:'tab','aria-controls':'sc2-'+kind,'aria-selected':String(index===0),click:function(){
@@ -123,21 +150,20 @@ return view.extend({
     Array.prototype.forEach.call(tabs.children,function(b){b.setAttribute('aria-selected',String(b===tab));});
    }},def[1]);tabs.appendChild(tab);
    var controls=E('div',{'class':'sc2-controls'});
-   if(kind==='route') controls.appendChild(target);
    buttons[kind]=E('button',{'class':'sc2-button sc2-primary',disabled:!canWrite||null,click:function(){return start(kind);}},def[2]);
    controls.appendChild(buttons[kind]);
    controls.appendChild(E('button',{'class':'sc2-button',disabled:!canWrite||null,click:function(){
     return calls.cancel(kind).then(checked).then(function(r){showResult(kind,r);}).catch(function(e){notice(e.message);});
    }},'Отменить'));
    pane.appendChild(controls);
-   if(kind==='route')pane.appendChild(shortcuts);
    outputs[kind]=E('div',{'class':'sc2-results','aria-live':'polite'});pane.appendChild(outputs[kind]);
    root.appendChild(pane);
-   showResult(kind,data[index+1]);running(kind,data[index+1].state==='running');
+   var initial=index<2?data[index+1]:{ok:true,state:'idle'};
+   showResult(kind,initial);running(kind,initial.state==='running');
   });
   var settings=E('div',{'class':'sc2-settings',hidden:true});
   var toggle=E('button',{'class':'sc2-button',click:function(){settings.hidden=!settings.hidden;}},'Настройки');
-  panes.sites.insertBefore(toggle,outputs.sites);panes.sites.insertBefore(settings,outputs.sites);
+  toggle.classList.add('sc2-settings-toggle');panes.sites.querySelector('.sc2-controls').appendChild(toggle);panes.sites.insertBefore(settings,outputs.sites);
   function renderSettings() {
    checks=[];settings.replaceChildren();
    config.sites.forEach(function(s){
@@ -157,12 +183,12 @@ return view.extend({
     Object.keys(inputs).forEach(function(k){next[k]=Number(inputs[k].value);});
     save.disabled=true;
     return calls.save_config(next).then(checked).then(function(r){
-     config=r.config;renderSettings();quickButtons();settings.hidden=true;notice('Настройки сохранены.');
+     config=r.config;renderSettings();settings.hidden=true;notice('Настройки сохранены.');
     }).catch(function(e){notice(e.message);}).finally(function(){save.disabled=!canWrite;});
    }},'Сохранить');
    settings.appendChild(save);
   }
-  renderSettings();quickButtons();
+  renderSettings();
   poll.add(function(){
    var kinds=Object.keys(active).filter(function(k){return active[k];});
    return Promise.all(kinds.map(function(kind){

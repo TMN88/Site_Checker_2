@@ -1,0 +1,21 @@
+#!/bin/sh
+# Podkop: read the configured sing-box controller. Never enable or modify it.
+set -f
+umask 077
+ROOT=${SC2_ROOT:-}
+dir=$1
+if [ -n "$ROOT" ]; then cfg=$(uci -c "$ROOT/etc/config" -q get podkop.settings.config_path)
+else cfg=$(uci -q get podkop.settings.config_path); fi
+[ -n "$cfg" ] || cfg=/etc/sing-box/config.json
+case "$cfg" in /*) ;; *) exit 1 ;; esac
+cfg="$ROOT$cfg"
+[ -r "$cfg" ] || exit 1
+endpoint=$(jq -er '.experimental.clash_api.external_controller | select(type=="string") | select(test("^(localhost|[0-9.]+|\\[[0-9A-Fa-f:]+\\]):[0-9]{1,5}$"))' "$cfg") || exit 1
+port=${endpoint##*:}
+[ "$port" -gt 0 ] && [ "$port" -le 65535 ] || exit 1
+host=${endpoint%:*}
+case "$host" in 0.0.0.0|'[::]') host=127.0.0.1 ;; esac
+# The secret never appears in command arguments, output or browser results.
+jq -er '(.experimental.clash_api.secret // "") | select(type=="string") | select(test("[\\r\\n]")|not) | if length>0 then "Authorization: Bearer "+. else "" end' "$cfg" > "$dir/controller-header" || exit 1
+trap 'rm -f "$dir/controller-header"' EXIT
+curl -q --silent --fail --noproxy '*' --proto '=http' --connect-timeout 2 --max-time 5 --max-filesize 2097152 --header "@$dir/controller-header" "http://$host:$port/connections"

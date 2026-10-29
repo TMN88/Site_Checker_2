@@ -10,7 +10,7 @@ PROBE="$ROOT/usr/libexec/site-checker2-probe"
 BOUND="$ROOT/usr/libexec/site-checker2-bounded"
 export LC_ALL=C
 error() { jq -cn --arg e "$1" '{ok:false,error:$e}'; }
-kind_ok() { case "$1" in sites|diagnostics|route) return 0 ;; *) return 1 ;; esac; }
+kind_ok() { case "$1" in sites|diagnostics|route|live_sites|connections) return 0 ;; *) return 1 ;; esac; }
 secure_state() {
     [ ! -L "$STATE" ] || return 1
     mkdir -p "$STATE" || return 1
@@ -134,10 +134,31 @@ native() {
     wait "$child"
     rc=$?
     children=""
-    if [ "$rc" -ne 0 ] || [ "$(wc -c < "$dir/$name.json")" -gt 131072 ] || ! jq -e -s 'length==1 and (.[0]|type=="object")' "$dir/$name.json" >/dev/null 2>&1; then
+    limit=131072
+    [ "$name" != connections ] || limit=2097152
+    if [ "$rc" -ne 0 ] || [ "$(wc -c < "$dir/$name.json")" -gt "$limit" ] || ! jq -e -s 'length==1 and (.[0]|type=="object")' "$dir/$name.json" >/dev/null 2>&1; then
         printf '{}\n' > "$dir/$name.json"
         printf '%s\n' "$name" >> "$dir/missing"
     fi
+}
+run_connections() {
+    detect || return 1
+    case "$APP" in
+        forkozz)
+            [ -f "$ROOT/opt/zapret-manager-luci/netshift.uc" ] || { error connections_unsupported; return 1; }
+            native connections ucode "$ROOT/opt/zapret-manager-luci/netshift.uc" conns
+            ;;
+        forkop) native connections "$ROOT/usr/bin/forkop" clash_api GET /connections ;;
+        podkop) native connections sh "$ROOT/usr/libexec/site-checker2-connections" "$dir" ;;
+    esac
+    [ ! -s "$dir/missing" ] || { error connections_unavailable; return 1; }
+    jq -c --arg app "$APP" -f "$LIB/connections.jq" "$dir/connections.json" > "$dir/snapshot.json" || return 1
+    # Keep the browser reply below rpcd's size limit, including UTF-8 names.
+    while [ "$(wc -c < "$dir/snapshot.json")" -gt 196608 ]; do
+        jq -c '.conns=(.conns[0:((.conns|length)/2|floor)]) | .truncated=true' "$dir/snapshot.json" > "$dir/snapshot.tmp" || return 1
+        mv "$dir/snapshot.tmp" "$dir/snapshot.json"
+    done
+    cat "$dir/snapshot.json"
 }
 detect() {
     sh "$ROOT/usr/libexec/site-checker2-detect" > "$dir/application.json"
@@ -241,7 +262,7 @@ case "$1" in
         : > "$dir/missing"
         trap 'worker_cleanup' EXIT
         trap 'exit 1' INT TERM HUP
-        case "$2" in sites) run_sites ;; diagnostics) run_diagnostics ;; route) run_route ;; esac > "$dir/output"
+        case "$2" in sites) run_sites ;; diagnostics) run_diagnostics ;; route) run_route ;; live_sites|connections) run_connections ;; esac > "$dir/output"
         if jq -e 'type=="object"' "$dir/output" >/dev/null 2>&1; then
             jq '. + {state:"done"}' "$dir/output" > "$dir/result.tmp" && mv "$dir/result.tmp" "$dir/result.json"
         fi

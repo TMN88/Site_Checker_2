@@ -14,7 +14,7 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
  const css=fs.readFileSync(path.join(root,'files/www/luci-static/resources/view/site-checker2/style.css'),'utf8');
  const config=JSON.parse(fs.readFileSync(path.join(root,'files/etc/site-checker2/config.json')));
  await page.evaluate(async({source,config})=>{
-  window.rpcCalls=[];window.testConfig=config;window.jobs={sites:{ok:true,state:'idle'},diagnostics:{ok:true,state:'idle'},route:{ok:true,state:'idle'}};
+  window.rpcCalls=[];window.testConfig=config;window.jobs={sites:{ok:true,state:'idle'},diagnostics:{ok:true,state:'idle'},live_sites:{ok:true,state:'idle'},connections:{ok:true,state:'idle'}};
   window.E=function(tag,attrs,children){
    let el=document.createElement(tag);attrs=attrs||{};
    Object.entries(attrs).forEach(([k,v])=>{
@@ -39,8 +39,17 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
    if(method.startsWith('start_')){
     let kind=method.slice(6);
     if(kind==='sites')window.jobs[kind]={ok:true,state:'done',results:window.testConfig.sites.filter(x=>x.enabled).map((x,i)=>({...x,status:i===2?'error':'available',http_code:i===2?403:200,elapsed_ms:125+i*15,reason:i===2?'http_error':'none'}))};
-    if(kind==='diagnostics')window.jobs[kind]={ok:true,state:'done',application:'Forkop',installed_version:'2.0.0',latest_version:'2.0.0',diagnostic_status:'ok',issues:[]};
-    if(kind==='route')window.jobs[kind]={ok:true,state:'done',target:args[0],action:'connection',presumed_exit:'vpn',reason:'Совпадение с тестовым правилом секции',outbound:'youtube-out',matched_section:'YouTube',matched_rule:'Домены секции'};
+    if(kind==='diagnostics')window.jobs[kind]={ok:true,state:'done',application:'forkozz',installed_version:'2.0.0',latest_version:'2.0.0',diagnostic_status:'ok',issues:[],checks:[
+     {label:'Служба Forkozz',status:'ok',value:'Запущена и включена в автозапуск',source:'Forkozz · diag'},
+     {label:'sing-box',status:'ok',value:'Работает · 1.14.4',source:'get_sing_box_status'},
+     {label:'DNS роутера',status:'ok',value:'Запросы идут через Forkozz',source:'Forkozz · diag'},
+     {label:'FakeIP',status:'ok',value:'Работает (198.18.0.5)',source:'check_fakeip'},
+     {label:'Подключение к серверу',status:'ok',value:'Отвечает за 713 мс',source:'Forkozz · diag'}]};
+    if(kind==='live_sites'||kind==='connections')window.jobs[kind]={ok:true,state:'done',application:'forkozz',captured_at:1793253600,total:4,truncated:false,conns:[
+     {src:'192.168.7.162',dev:'Телефон',host:'chatgpt.com',dst:'1.2.3.4',dport:'443',proto:'tcp',out:'Основная'},
+     {src:'192.168.7.162',dev:'Телефон',host:'chatgpt.com',dst:'1.2.3.4',dport:'443',proto:'tcp',out:'Основная'},
+     {src:'192.168.7.163',dev:'Ноутбук',host:'chatgpt.com',dst:'1.2.3.4',dport:'443',proto:'udp',out:'Основная'},
+     {src:'192.168.7.162',dev:'Телефон',host:'',dst:'2001:db8::1',dport:'443',proto:'tcp',out:''}]};
     return {ok:true,state:'running',kind};
    }
   }};
@@ -48,11 +57,23 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
   document.body.appendChild(window.viewInstance.render(await window.viewInstance.load()));
  },{source,config});
  await page.addStyleTag({content:'input[type=checkbox]{display:none!important}'+css});
- assert.deepEqual(await page.evaluate(()=>window.rpcCalls),['get_config','job','job','job']);
+ assert.deepEqual(await page.evaluate(()=>window.rpcCalls),['get_config','job','job']);
  await page.getByRole('tab',{name:'Диагностика',exact:true}).click();
- await page.getByRole('tab',{name:'Куда пойдёт запрос',exact:true}).click();
+ await page.getByRole('tab',{name:'Сайты сейчас',exact:true}).click();
+ await page.getByRole('tab',{name:'Соединения',exact:true}).click();
+ assert.equal(await page.getByRole('tab',{name:'Куда пойдёт запрос',exact:true}).count(),0);
  await page.getByRole('tab',{name:'Сайты',exact:true}).click();
  assert.equal(await page.evaluate(()=>window.rpcCalls.filter(x=>x.startsWith('start')).length),0);
+ const selected=await page.getByRole('tab',{name:'Сайты',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor);
+ const unselected=await page.getByRole('tab',{name:'Диагностика',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor);
+ assert.notEqual(selected,unselected,'active tab must have a filled background');
+ async function checkControls(){
+  const boxes=await page.locator('#sc2-sites>.sc2-controls button').evaluateAll(els=>els.map(e=>{const b=e.getBoundingClientRect();return {top:b.top,right:b.right,left:b.left};}));
+  assert.equal(boxes.length,3);assert.ok(Math.abs(boxes[0].top-boxes[2].top)<2,'all three buttons share a row');
+  const edge=await page.locator('#sc2-sites>.sc2-controls').evaluate(el=>el.getBoundingClientRect().right);
+  assert.ok(Math.abs(edge-boxes[2].right)<2,'settings aligned right');
+ }
+ await checkControls();
  await page.getByRole('button',{name:'Проверить сейчас',exact:true}).click();
  await page.evaluate(()=>window.pollTick());
  assert.equal(await page.locator('tbody tr').count(),16);
@@ -65,19 +86,24 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
  assert.equal(await page.locator('.sc2-check input').first().isChecked(),false);
  await page.screenshot({path:path.join(out,'ui-settings.png'),fullPage:true});
  await page.getByRole('button',{name:'Настройки',exact:true}).click();
- await page.getByRole('tab',{name:'Куда пойдёт запрос',exact:true}).click();
- assert.equal(await page.locator('.sc2-shortcuts button').count(),15);
- assert.equal(await page.locator('.sc2-shortcuts button').filter({hasText:'YouTube'}).count(),0);
- await page.getByRole('button',{name:'Instagram',exact:true}).click();
- assert.equal(await page.locator('.sc2-controls input[type=text]').inputValue(),'instagram.com');
- await page.getByRole('button',{name:'Проверить',exact:true}).click();
+ await page.getByRole('tab',{name:'Сайты сейчас',exact:true}).click();
+ await page.locator('#sc2-live_sites').getByRole('button',{name:'Обновить',exact:true}).click();
  await page.evaluate(()=>window.pollTick());
- assert.ok((await page.locator('#sc2-route .sc2-results').innerText()).includes('Через настроенный VPN / туннель'));
- await page.screenshot({path:path.join(out,'ui-route.png'),fullPage:true});
+ assert.equal(await page.locator('#sc2-live_sites tbody tr').count(),2);
+ assert.ok((await page.locator('#sc2-live_sites .sc2-results').innerText()).includes('Ноутбук'));
+ await page.screenshot({path:path.join(out,'ui-live-sites.png'),fullPage:true});
+ await page.getByRole('tab',{name:'Соединения',exact:true}).click();
+ await page.locator('#sc2-connections').getByRole('button',{name:'Обновить',exact:true}).click();
+ await page.evaluate(()=>window.pollTick());
+ assert.equal(await page.locator('#sc2-connections tbody tr').count(),3);
+ assert.ok((await page.locator('#sc2-connections .sc2-results').innerText()).includes('[2001:db8::1]:443'));
+ await page.screenshot({path:path.join(out,'ui-connections.png'),fullPage:true});
  await page.getByRole('tab',{name:'Диагностика',exact:true}).click();
  await page.getByRole('button',{name:'Запустить диагностику',exact:true}).click();
  await page.evaluate(()=>window.pollTick());
  assert.equal(await page.getByText('✅ ВСЁ ОК',{exact:true}).count(),1);
+ assert.equal(await page.locator('.sc2-diagnostic-table tbody tr').count(),5);
+ assert.ok((await page.locator('#sc2-diagnostics').innerText()).includes('713 мс'));
  await page.screenshot({path:path.join(out,'ui-diagnostics.png'),fullPage:true});
  await page.getByRole('button',{name:'Запустить диагностику',exact:true}).click();
  await page.locator('#sc2-diagnostics').getByRole('button',{name:'Отменить',exact:true}).click();
@@ -88,8 +114,17 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
  await page.screenshot({path:path.join(out,'ui-desktop-dark.png'),fullPage:true});
  await page.setViewportSize({width:390,height:844});
  await page.locator('.sc2').evaluate(el=>el.setAttribute('data-theme','light'));
+ await checkControls();
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'mobile horizontal overflow');
  await page.screenshot({path:path.join(out,'ui-mobile-light.png'),fullPage:true});
+ for(const [tab,id] of [['Сайты сейчас','live_sites'],['Соединения','connections'],['Диагностика','diagnostics']]){
+  await page.getByRole('tab',{name:tab,exact:true}).click();
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'mobile overflow: '+tab);
+  if(id==='diagnostics'){
+   await page.getByRole('button',{name:'Запустить диагностику',exact:true}).click();await page.evaluate(()=>window.pollTick());
+  }
+  await page.screenshot({path:path.join(out,'ui-mobile-'+id+'.png'),fullPage:true});
+ }
  await page.evaluate(async()=>{
   window.L.hasViewPermission=()=>false;
   document.querySelector('.sc2').replaceWith(window.viewInstance.render(await window.viewInstance.load()));
@@ -99,6 +134,6 @@ const root=path.resolve(__dirname,'..'),out=path.join(root,'outputs');
  assert.equal(await page.getByRole('button',{name:'Сохранить',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Проверить сейчас',exact:true}).isDisabled(),true);
  assert.deepEqual(errors,[]);
- console.log('UI passed: no automatic checks, tab switching, sites, settings persistence, quick domains, diagnostics, mobile width. Screenshots saved.');
+ console.log('UI passed: filled active tabs, aligned controls, settings persistence, detailed diagnostics, live sites and connections, IPv6, mobile width, read-only mode. Screenshots saved.');
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

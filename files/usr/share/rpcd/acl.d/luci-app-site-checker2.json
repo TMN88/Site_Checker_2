@@ -15,7 +15,8 @@
           "save_config",
           "start_sites",
           "start_diagnostics",
-          "start_route",
+          "start_live_sites",
+          "start_connections",
           "cancel"
         ]
       }

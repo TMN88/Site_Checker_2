@@ -83,6 +83,8 @@ for(let app of ['forkop','podkop'])test(app+' uses only its own allowlisted nati
  let f=fixture();nativeFixture(f,app);let r=worker(f,'diagnostics',cfg(f));
  assert.equal(r.application,app);assert.equal(r.diagnostic_status,'ok');assert.deepEqual(r.issues,[]);
  assert.ok(!/restart|reload|start|show_config|report/.test(fs.readFileSync(path.join(f.root,'calls'),'utf8')));
+ assert.ok(r.checks.some(x=>x.label==='FakeIP'));
+ assert.ok(r.checks.some(x=>x.label.includes('DNS')));
 });
 test('incomplete native fields never become ALL OK; secrets are not reflected',()=>{
  let f=fixture();nativeFixture(f,'forkop');put(f.root,'usr/bin/forkop','#!/bin/sh\necho \'{"secret":"VPN_PRIVATE_KEY","running":"false"}\'\n');
@@ -92,6 +94,79 @@ test('custom/latest unknown version is never declared outdated',()=>{
  let f=fixture();nativeFixture(f,'forkop');put(f.root,'bin/curl','#!/bin/sh\necho \'{"tag_name":"snapshot-3"}\'\n');
  let r=worker(f,'diagnostics',cfg(f));assert.equal(r.update_status,'unknown');assert.equal(r.diagnostic_status,'issues');
 });
+test('Forkozz exposes native diagnostic values including latency and extra checks',()=>{
+ const f=fixture();nativeFixture(f,'netshift');put(f.root,'opt/zapret-manager-luci/netshift.uc','');
+ const checks=['Служба Forkozz','sing-box','DNS роутера','FakeIP'].map(what=>({what,verdict:'ok',why:what==='FakeIP'?'работает (198.18.0.5)':'работает'}));
+ checks.push({what:'Подключение к серверу',verdict:'ok',why:'отвечает за 713 мс'});
+ put(f.root,'panel-reply',JSON.stringify({checks,extra:[{what:'Откуда берёт трафик',verdict:'ok',why:'br-lan'}],secret:'NEVER_RETURN_THIS'}));
+ put(f.root,'bin/ucode','#!/bin/sh\ncat "$SC2_ROOT/panel-reply"\n');
+ const r=worker(f,'diagnostics',cfg(f));
+ assert.ok(r.checks.some(x=>x.value.includes('713 мс')));assert.ok(r.checks.some(x=>x.value==='br-lan'));
+ assert.ok(r.checks.some(x=>x.value.includes('198.18.0.5')));assert.ok(!JSON.stringify(r).includes('NEVER_RETURN_THIS'));
+});
+
+test('Forkozz sites-now and connections call only native conns and project safe fields',()=>{
+ const f=fixture();nativeFixture(f,'netshift');put(f.root,'opt/zapret-manager-luci/netshift.uc','');
+ put(f.root,'connection-reply',JSON.stringify({conns:[{src:'192.168.7.162',dev:'Телефон',dst:'1.2.3.4',host:'chatgpt.com',dport:'443',proto:'tcp',out:'Основная',secret:'NEVER_RETURN_THIS'}],total:19}));
+ put(f.root,'bin/ucode','#!/bin/sh\nprintf "%s\\n" "$2" >> "$CALLS"\n[ "$2" = conns ] || exit 2\ncat "$SC2_ROOT/connection-reply"\n');
+ for(const kind of ['live_sites','connections']){
+  const r=worker(f,kind,cfg(f));assert.equal(r.application,'forkozz');assert.equal(r.total,19);assert.equal(r.conns[0].host,'chatgpt.com');assert.equal(r.conns[0].out,'Основная');assert.ok(!JSON.stringify(r).includes('NEVER_RETURN_THIS'));
+ }
+ assert.deepEqual(fs.readFileSync(path.join(f.root,'calls'),'utf8').trim().split(/\r?\n/),['conns','conns']);
+});
+
+test('Forkop uses native GET connections transport and normalizes its body',()=>{
+ const f=fixture();nativeFixture(f,'forkop');
+ put(f.root,'connection-reply',JSON.stringify({status:200,body:JSON.stringify({connections:[{metadata:{sourceIP:'192.168.1.2',destinationIP:'2001:db8::1',destinationPort:443,network:'tcp'},chains:['node','main-out'],rule:'RuleSet',secret:'NEVER_RETURN_THIS'}]})}));
+ put(f.root,'usr/bin/forkop','#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n[ "$1 $2 $3" = "clash_api GET /connections" ] || exit 2\ncat "$SC2_ROOT/connection-reply"\n');
+ const r=worker(f,'connections',cfg(f));assert.equal(r.ok,true);assert.equal(r.conns[0].dst,'2001:db8::1');assert.equal(r.conns[0].out,'main-out');assert.equal(r.total,1);assert.ok(!JSON.stringify(r).includes('NEVER_RETURN_THIS'));
+ assert.equal(fs.readFileSync(path.join(f.root,'calls'),'utf8').trim(),'clash_api GET /connections');
+});
+
+test('Podkop reads configured controller with protected auth header and no config changes',()=>{
+ const f=fixture();nativeFixture(f,'podkop');
+ const config=JSON.stringify({experimental:{clash_api:{external_controller:'0.0.0.0:9090',secret:'fixture-auth-token'}}});
+ put(f.root,'etc/sing-box/custom.json',config);put(f.root,'bin/uci','#!/bin/sh\necho /etc/sing-box/custom.json\n');
+ put(f.root,'bin/curl','#!/bin/sh\nprintf "%s\\n" "$@" > "$SC2_ROOT/curl-args"\nwhile [ "$#" -gt 0 ]; do if [ "$1" = --header ]; then shift; cat "${1#@}" > "$SC2_ROOT/seen-header"; fi; shift; done\necho \'{"connections":[{"metadata":{"sourceIP":"192.168.1.3","host":"example.com"},"chains":["direct"]}]}\'\n');
+ const r=worker(f,'live_sites',cfg(f));assert.equal(r.ok,true);assert.equal(r.conns[0].host,'example.com');assert.equal(r.conns[0].out,'');
+ assert.ok(!JSON.stringify(r).includes('fixture-auth-token'));assert.ok(!fs.readFileSync(path.join(f.root,'curl-args'),'utf8').includes('fixture-auth-token'));
+ assert.ok(fs.readFileSync(path.join(f.root,'curl-args'),'utf8').includes('http://127.0.0.1:9090/connections'));
+ assert.equal(fs.readFileSync(path.join(f.root,'seen-header'),'utf8').trim(),'Authorization: Bearer fixture-auth-token');
+ assert.equal(fs.existsSync(path.join(f.root,'tmp/site-checker2/live_sites/controller-header')),false);
+ assert.equal(fs.readFileSync(path.join(f.root,'etc/sing-box/custom.json'),'utf8'),config);
+});
+
+test('connections rejects native API errors and malformed data instead of showing empty success',()=>{
+ const f=fixture();nativeFixture(f,'forkop');
+ put(f.root,'usr/bin/forkop','#!/bin/sh\ncat "$SC2_ROOT/connection-reply"\n');
+ for(const response of [{status:401,body:'{"connections":[]}'},{status:200,body:'invalid JSON'},{status:200,body:'[]'},{status:200,body:'{}'}]){
+  put(f.root,'connection-reply',JSON.stringify(response));assert.equal(worker(f,'connections',cfg(f)).error,'connections_unavailable');
+ }
+ put(f.root,'connection-reply',JSON.stringify({status:200,body:'{"connections":[]}'}));assert.equal(worker(f,'connections',cfg(f)).total,0);
+});
+
+test('Podkop does not enable a disabled API or follow unsafe controller addresses',()=>{
+ const f=fixture();nativeFixture(f,'podkop');put(f.root,'bin/uci','#!/bin/sh\necho /etc/sing-box/config.json\n');
+ put(f.root,'bin/curl','#!/bin/sh\necho called >> "$CALLS"\nexit 1\n');
+ for(const endpoint of ['', 'http://evil.example:9090/path', '127.0.0.1:0', '127.0.0.1:9090\nInjected: header']){
+  const config=JSON.stringify({experimental:{clash_api:{external_controller:endpoint,secret:'fixture-token'}}});
+  put(f.root,'etc/sing-box/config.json',config);
+  assert.equal(worker(f,'connections',cfg(f)).error,'connections_unavailable');
+  assert.equal(fs.readFileSync(path.join(f.root,'etc/sing-box/config.json'),'utf8'),config);
+ }
+ assert.equal(fs.existsSync(path.join(f.root,'calls')),false);
+});
+
+test('connection snapshots bound large lists, preserve totals and redact credential strings',()=>{
+ const f=fixture();nativeFixture(f,'netshift');put(f.root,'opt/zapret-manager-luci/netshift.uc','');
+ put(f.root,'connection-reply',JSON.stringify({total:500,conns:Array.from({length:400},()=>({src:'192.168.1.2',host:'vless://sensitive-credential',out:'main',dport:'443'}))}));
+ put(f.root,'bin/ucode','#!/bin/sh\ncat "$SC2_ROOT/connection-reply"\n');
+ const r=worker(f,'connections',cfg(f));assert.equal(r.total,500);assert.equal(r.truncated,true);assert.equal(r.conns.length,150);assert.ok(!JSON.stringify(r).includes('sensitive-credential'));
+ const long=n=>'🙂'.repeat(n);
+ put(f.root,'connection-reply',JSON.stringify({total:400,conns:Array.from({length:400},()=>({src:long(64),dev:long(64),dst:long(64),host:long(253),out:long(96),rule:long(96),proto:long(16),dport:'443'}))}));
+ const utf=worker(f,'connections',cfg(f));assert.equal(utf.ok,true);assert.equal(utf.truncated,true);assert.ok(utf.conns.length<150);assert.ok(Buffer.byteLength(JSON.stringify(utf))<196608);
+});
+
 test('routing explicitly reports unsupported instead of ip route get',()=>{
  let f=fixture();nativeFixture(f,'podkop');assert.equal(worker(f,'route',cfg(f),{target:'youtube.com'}).error,'route_unsupported');
 });
