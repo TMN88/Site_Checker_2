@@ -1,7 +1,16 @@
 """Local test server: real filesystem access as an unprivileged user, two requests."""
-import http.server, sys
+import http.server, sys, os, pwd
 from pathlib import Path
 root = Path(sys.argv[1])
+# Enter the fixture while privileged: CI checkout ancestors may be private.
+# Requests themselves must run without root and use only this working directory.
+os.chdir(root)
+account = pwd.getpwnam('nobody')
+os.setgroups([])
+os.setgid(account.pw_gid)
+os.setuid(account.pw_uid)
+assert os.geteuid() == account.pw_uid and os.geteuid() != 0
+root = Path('.')
 allowed = {
  "/luci-static/resources/view/site-checker2/overview.js",
  "/luci-static/resources/view/site-checker2/style.css",

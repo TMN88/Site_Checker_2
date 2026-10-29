@@ -127,9 +127,9 @@ async function httpAssets(t,f){
  const {spawn}=require('node:child_process'),http=require('node:http');
  const sudo=spawnSync('sudo',['-n','true'],{encoding:'utf8'});
  if(sudo.status!==0){t.skip('Unprivileged HTTP check needs non-interactive sudo');return null;}
- // Fixture root was created private by mkdtemp; expose only its traversal for the test server.
- fs.chmodSync(f.dir,0o755);
- let proc=spawn('sudo',['-n','-u','nobody','python3',path.join(root,'tools/unprivileged-http.py'),path.join(f.dir,'www')],{stdio:['ignore','pipe','pipe']});
+ // The server enters the private CI fixture as root, then drops uid/gid to nobody
+ // before accepting requests; installed file permissions are not changed here.
+ let proc=spawn('sudo',['-n','python3',path.join(root,'tools/unprivileged-http.py'),path.join(f.dir,'www')],{stdio:['ignore','pipe','pipe']});
  let stderr='';proc.stderr.on('data',b=>stderr+=b);
  try {
   let port=await new Promise((resolve,reject)=>{

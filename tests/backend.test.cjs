@@ -140,7 +140,7 @@ test('asynchronous start completes and exposes its result through job polling',a
  }
  assert.equal(r.state,'done');assert.equal(r.results[0].status,'available');
 });
-test('process-group deadline cleans up native descendants',{skip:process.platform==='win32'},()=>{
+test('process-group deadline cleans up native descendants',{skip:process.platform==='win32'},async()=>{
  let f=fixture();
  put(f.root,'bin/hanging-native','#!/bin/sh\nsh -c \'trap "" TERM; sleep 60\' &\necho "$!" > "$CHILD_PID_FILE"\nwait\n');
  let pidFile=path.join(f.root,'child.pid');
@@ -150,7 +150,13 @@ test('process-group deadline cleans up native descendants',{skip:process.platfor
  assert.ifError(r.error);assert.notEqual(r.status,0);
  let pid=Number(fs.readFileSync(pidFile,'utf8').trim());
  let stat;
- try{stat=fs.readFileSync('/proc/'+pid+'/stat','utf8');}catch(e){}
+ // SIGKILL delivery and orphan reaping are asynchronous on the CI host.
+ for(let i=0;i<50;i++){
+  stat=undefined;
+  try{stat=fs.readFileSync('/proc/'+pid+'/stat','utf8');}catch(e){}
+  if(!stat || stat.split(' ')[2]==='Z')break;
+  await new Promise(resolve=>setTimeout(resolve,20));
+ }
  assert.ok(!stat || stat.split(' ')[2]==='Z','native descendant remains alive after deadline');
 });
 test('native server failures and excluded-router FakeIP are interpreted separately',()=>{
